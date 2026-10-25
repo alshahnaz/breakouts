@@ -1,0 +1,39 @@
+name: Daily scan and publish app
+
+on:
+  schedule:
+    - cron: "45 10 * * 1-5"   # 4:15 PM IST, Mon–Fri (after market close)
+    - cron: "30 1 * * 1-5"    # 7:00 AM IST, Mon–Fri (catches late Yahoo updates)
+  workflow_dispatch:          # "Run workflow" button for manual refresh
+
+permissions:
+  contents: read
+  pages: write
+  id-token: write
+
+concurrency:
+  group: pages
+  cancel-in-progress: true
+
+jobs:
+  scan:
+    runs-on: ubuntu-latest
+    timeout-minutes: 40
+    environment:
+      name: github-pages
+      url: ${{ steps.deploy.outputs.page_url }}
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-python@v5
+        with:
+          python-version: "3.11"
+      - run: pip install yfinance pandas numpy
+      - run: python scan.py
+      - name: Copy app files
+        run: cp index.html manifest.json sw.js icon-180.png icon-512.png site/
+      - uses: actions/configure-pages@v5
+      - uses: actions/upload-pages-artifact@v3
+        with:
+          path: site
+      - id: deploy
+        uses: actions/deploy-pages@v4
