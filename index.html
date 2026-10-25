@@ -8,6 +8,7 @@
 <meta name="apple-mobile-web-app-status-bar-style" content="black-translucent">
 <meta name="apple-mobile-web-app-title" content="Breakouts">
 <meta name="theme-color" content="#0b0f14">
+<meta name="robots" content="noindex,nofollow">
 <link rel="apple-touch-icon" href="icon-180.png">
 <link rel="manifest" href="manifest.json">
 <title>Breakouts</title>
@@ -83,11 +84,29 @@ const pc=x=>x==null?"–":`<span class="${x>=0?'g':'r'}">${x>=0?'+':''}${fmt(x,1
 const nm={IGNITION:"🚀 Ignition",TURNAROUND:"🔄 Turnaround"};
 const tag=s=>`<span class="tag ${s}">${nm[s]||s}</span>`;
 
+let KEY=null;
+const b64=s=>Uint8Array.from(atob(s),c=>c.charCodeAt(0));
+async function dec(t){const a=b64(t.trim());return JSON.parse(new TextDecoder().decode(await crypto.subtle.decrypt({name:"AES-GCM",iv:a.slice(0,12)},KEY,a.slice(12))))}
+async function getJ(p){return dec(await (await fetch(p)).text())}
+async function mkKey(pw,L){const k=await crypto.subtle.importKey("raw",new TextEncoder().encode(pw),"PBKDF2",false,["deriveKey"]);
+  return crypto.subtle.deriveKey({name:"PBKDF2",salt:b64(L.salt),iterations:L.iter,hash:"SHA-256"},k,{name:"AES-GCM",length:256},false,["decrypt"])}
+async function unlock(){
+  const L=await (await fetch("data/lock.json?t="+Date.now())).json();
+  let pw=LS.get("pw",null);
+  while(true){
+    if(pw){try{KEY=await mkKey(pw,L);const ok=await dec(L.check).catch(()=>null);if(ok===null)throw 0;LS.set("pw",pw);return}catch(e){KEY=null}}
+    pw=await askPw(pw?"Wrong password, try again":"");
+  }
+}
+function askPw(msg){return new Promise(res=>{
+  V.innerHTML=`<div class="card" style="margin-top:40px;text-align:center"><div style="font-size:40px">🔒</div><b>Enter your app password</b><div class="mut" style="margin:6px 0 12px">${msg||"Saved on this phone after the first time."}</div><input id="pw" type="password" autocomplete="current-password"><button class="btn" id="pwgo" style="margin-top:10px;width:100%;padding:12px;background:#2f81f7">Unlock</button></div>`;
+  const go=()=>res($("#pw").value);$("#pwgo").onclick=go;$("#pw").onkeydown=e=>{if(e.key==="Enter")go()};$("#pw").focus();$("#upd").textContent="Locked";})}
 async function load(){
   try{
+    if(!KEY) await unlock();
     const b="?t="+Date.now();
-    S=await (await fetch("data/signals.json"+b)).json();
-    ALL=await (await fetch("data/all.json"+b)).json();
+    S=await getJ("data/signals.json"+b);
+    ALL=await getJ("data/all.json"+b);
     if(watch===null){watch=S.watch_default||[];LS.set("watch",watch)}
     $("#upd").textContent=`Updated ${S.updated} · data ${S.data_date} · ${S.universe} stocks`;
     const m=$("#mkt"); m.textContent=S.nifty.ok?"Market ✓":"Market weak"; m.style.background=S.nifty.ok?"#00c85333":"#ff525233"; m.style.color=S.nifty.ok?"#00c853":"#ff5252";
@@ -144,7 +163,7 @@ async function openChart(sym){
   $("#sheet").classList.add("show"); $("#csym").textContent=sym; $("#info").innerHTML='<span class="mut">Loading…</span>';
   $("#cstar").textContent=watch.includes(sym)?"★":"☆"; $("#cstar").onclick=()=>{const i=watch.indexOf(sym);i<0?watch.unshift(sym):watch.splice(i,1);LS.set("watch",watch);$("#cstar").textContent=watch.includes(sym)?"★":"☆";if(view==="watch")render()};
   const el=$("#chart"); el.innerHTML=""; if(chart){chart.remove();chart=null}
-  let d; try{d=await (await fetch(`data/c/${sym}.json?t=${S?S.data_date:""}`)).json()}catch(e){$("#info").innerHTML='<span class="r">No chart data for '+sym+'</span>';return}
+  let d; try{d=await getJ(`data/c/${sym}.json?t=${S?S.data_date:""}`)}catch(e){$("#info").innerHTML='<span class="r">No chart data for '+sym+'</span>';return}
   if(!window.LightweightCharts){$("#info").innerHTML='<span class="r">Chart library failed to load (needs internet).</span>';return}
   chart=LightweightCharts.createChart(el,{width:el.clientWidth,height:el.clientHeight,layout:{background:{color:"#0b0f14"},textColor:"#8b98a5"},grid:{vertLines:{color:"#161d26"},horzLines:{color:"#161d26"}},rightPriceScale:{borderColor:"#222b36"},timeScale:{borderColor:"#222b36"},crosshair:{mode:0}});
   const cs=chart.addCandlestickSeries({upColor:"#00c853",downColor:"#ff5252",borderVisible:false,wickUpColor:"#00c853",wickDownColor:"#ff5252"});
