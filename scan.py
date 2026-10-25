@@ -9,9 +9,10 @@ Quality filters (v2, added after the Sep–Oct 2026 stop-outs):
   * skip the trade if it opens more than 2% above the signal close (don't chase gaps)
 Trade rules: buy next open, sell at +25% (target), or if a day CLOSES 20% below entry sell next open
 (intraday wicks no longer stop you out), max 120 trading days.
-LEADER (v3) – top-20 stock by risk-adjusted 6m+3m momentum makes a 20-day closing high (not >15% above 20DMA);
-  works in weak markets too. +20% target / close below -20% / 120 days.
-  Backtest: 2012-19 63% win +4.7%, 2020-23 69% win +7.3%, 2024-26 59% win +2.7%, 2026 68% win +6.5%.
+LEADER (v4) – top-30 stock by risk-adjusted 6m+3m momentum makes a 20-day closing high, within 8% of its 52w high;
+  skip if it opens >3% up. Works in weak markets too. +10% target / sell if a day closes 30% below / 120 days.
+  Backtest win rate: 2012-19 79% (+3.2%/trade), 2020-23 84% (+4.4%), 2024-26 77% (+1.7%), 2026 89% (+5.8%).
+  Losers average about -20%, so one loss cancels about two wins.
 Breakout setups backtest (~1,300 NSE stocks, charges incl.): 2012-19 59% win +5.4%/trade, 2020-26 64% win +7.9%/trade,
 2024-26 54% win +3.9%/trade (old v1 rules: 40% win, +1.9%/trade in 2024-26).
 """
@@ -23,7 +24,7 @@ SETUPS = {"IGNITION": (-10, 1000), "TURNAROUND": (-20, -10)}     # allowed % dis
 TR, R20, R20MAX, TGT, STOP, MAXD, MINTURN_CR, COOL = 2.5, 10, 25, 25, 20, 120, 1.0, 40
 ATRMAX, EXTMAX, GAPMAX = 4.5, 20, 2   # % limits
 # LEADER setup (v3): the stocks that survive falls = smooth, persistent relative strength
-L_TOP, L_TGT, L_STOP, L_EXT, L_COOL = 20, 20, 20, 15, 20
+L_TOP, L_TGT, L_STOP, L_HI, L_GAP, L_COOL = 30, 10, 30, -8, 3, 20   # v4: tuned for >=75% win rate
 
 
 def load_universe():
@@ -109,16 +110,18 @@ def leader_engine(d, rk):
     O, H, L, C = (d[k].values for k in ("Open", "High", "Low", "Close"))
     n = len(C); r = rk.reindex(d.index).values
     hi20 = C >= pd.Series(C).rolling(20).max().values
-    ext = (C / pd.Series(C).rolling(20).mean().values - 1) * 100
+    offhi = (C / pd.Series(H).rolling(252, min_periods=200).max().values - 1) * 100
     trades, cur, last, i = [], None, -999, 200
     while i < n:
         if cur is None:
-            if r[i] == r[i] and r[i] <= L_TOP and hi20[i] and ext[i] <= L_EXT and i - last >= L_COOL:
+            if r[i] == r[i] and r[i] <= L_TOP and hi20[i] and offhi[i] >= L_HI and i - last >= L_COOL:
                 last = i
                 t = dict(setup="LEADER", sig_i=i, tr=None, r20=round(float((C[i] / C[i - 20] - 1) * 100), 1), off_hi=None, rank=int(r[i]))
                 if i + 1 >= n:
                     t.update(entry_i=None, status="buy_next_open"); trades.append(t); break
                 k = i + 1; e = O[k]
+                if e > C[i] * (1 + L_GAP / 100):
+                    i = k; continue
                 cur = dict(t, entry_i=k, entry=e, target=e * (1 + L_TGT / 100), stop=e * (1 - L_STOP / 100), status="open")
                 i = k; continue
             i += 1; continue
@@ -163,7 +166,7 @@ def main():
                 ld = t["setup"] == "LEADER"; tg, sp = (L_TGT, L_STOP) if ld else (TGT, STOP)
                 buy.append(dict(sym=s, setup=t["setup"], price=r2(C[-1]), tr=t["tr"], r20=t["r20"], off_hi=t["off_hi"], rank=t.get("rank"),
                                 tgt_pct=tg, stop_pct=sp, target=r2(C[-1] * (1 + tg / 100)), stop=r2(C[-1] * (1 - sp / 100)),
-                                max_entry=None if ld else r2(C[-1] * (1 + GAPMAX / 100)),
+                                max_entry=r2(C[-1] * (1 + (L_GAP if ld else GAPMAX) / 100)),
                                 date=dstr(d.index[-1])))
                 markers.append([dstr(d.index[t["sig_i"]]), "sig", t["setup"]]); continue
             markers.append([dstr(d.index[t["entry_i"]]), "buy", round(t["entry"], 2), t["setup"]])
