@@ -9,7 +9,10 @@ Quality filters (v2, added after the Sep–Oct 2026 stop-outs):
   * skip the trade if it opens more than 2% above the signal close (don't chase gaps)
 Trade rules: buy next open, sell at +25% (target), or if a day CLOSES 20% below entry sell next open
 (intraday wicks no longer stop you out), max 120 trading days.
-Backtest (~1,300 NSE stocks, charges incl.): 2012-19 59% win +5.4%/trade, 2020-26 64% win +7.9%/trade,
+LEADER (v3) – top-20 stock by risk-adjusted 6m+3m momentum makes a 20-day closing high (not >15% above 20DMA);
+  works in weak markets too. +20% target / close below -20% / 120 days.
+  Backtest: 2012-19 63% win +4.7%, 2020-23 69% win +7.3%, 2024-26 59% win +2.7%, 2026 68% win +6.5%.
+Breakout setups backtest (~1,300 NSE stocks, charges incl.): 2012-19 59% win +5.4%/trade, 2020-26 64% win +7.9%/trade,
 2024-26 54% win +3.9%/trade (old v1 rules: 40% win, +1.9%/trade in 2024-26).
 """
 import os, json, math, datetime as dt
@@ -19,6 +22,8 @@ OUT = "site/data"
 SETUPS = {"IGNITION": (-10, 1000), "TURNAROUND": (-20, -10)}     # allowed % distance from 52-week high
 TR, R20, R20MAX, TGT, STOP, MAXD, MINTURN_CR, COOL = 2.5, 10, 25, 25, 20, 120, 1.0, 40
 ATRMAX, EXTMAX, GAPMAX = 4.5, 20, 2   # % limits
+# LEADER setup (v3): the stocks that survive falls = smooth, persistent relative strength
+L_TOP, L_TGT, L_STOP, L_EXT, L_COOL = 20, 20, 20, 15, 20
 
 
 def load_universe():
@@ -88,6 +93,48 @@ def engine(d, nifty=None):
     return trades
 
 
+def leader_ranks(data):
+    """Daily rank (1 = strongest) by risk-adjusted 6m + 3m momentum, among liquid stocks above 200DMA and within 25% of 52w high."""
+    C = pd.DataFrame({s: d.Close for s, d in data.items()}).sort_index()
+    H = pd.DataFrame({s: d.High for s, d in data.items()}).reindex(C.index)
+    T = pd.DataFrame({s: d.Close * d.Volume for s, d in data.items()}).reindex(C.index).rolling(20, min_periods=15).mean()
+    vol = C.pct_change(fill_method=None).rolling(63).std() * np.sqrt(250)
+    m6, m3 = C / C.shift(126) - 1, C / C.shift(63) - 1
+    ok = (T >= MINTURN_CR * 1e7) & (C > 20) & (C > C.rolling(200).mean()) & (C / H.rolling(252, min_periods=200).max() >= 0.75) & (vol >= 0.15) & m6.notna()
+    sc = (m6 / vol).where(ok).rank(axis=1, ascending=False) + (m3 / vol).where(ok).rank(axis=1, ascending=False)
+    return sc.rank(axis=1, method="first"), m6
+
+
+def leader_engine(d, rk):
+    O, H, L, C = (d[k].values for k in ("Open", "High", "Low", "Close"))
+    n = len(C); r = rk.reindex(d.index).values
+    hi20 = C >= pd.Series(C).rolling(20).max().values
+    ext = (C / pd.Series(C).rolling(20).mean().values - 1) * 100
+    trades, cur, last, i = [], None, -999, 200
+    while i < n:
+        if cur is None:
+            if r[i] == r[i] and r[i] <= L_TOP and hi20[i] and ext[i] <= L_EXT and i - last >= L_COOL:
+                last = i
+                t = dict(setup="LEADER", sig_i=i, tr=None, r20=round(float((C[i] / C[i - 20] - 1) * 100), 1), off_hi=None, rank=int(r[i]))
+                if i + 1 >= n:
+                    t.update(entry_i=None, status="buy_next_open"); trades.append(t); break
+                k = i + 1; e = O[k]
+                cur = dict(t, entry_i=k, entry=e, target=e * (1 + L_TGT / 100), stop=e * (1 - L_STOP / 100), status="open")
+                i = k; continue
+            i += 1; continue
+        if H[i] >= cur["target"]:
+            cur.update(exit_i=i, exit=max(cur["target"], O[i]) if i > cur["entry_i"] else cur["target"], status="target"); trades.append(cur); cur = None
+        elif C[i] <= cur["stop"]:
+            if i + 1 >= n:
+                cur["sell_next"] = True; break
+            cur.update(exit_i=i + 1, exit=O[i + 1], status="stop"); trades.append(cur); cur = None; i += 2; continue
+        elif i - cur["entry_i"] >= MAXD:
+            cur.update(exit_i=i, exit=C[i], status="time"); trades.append(cur); cur = None
+        i += 1
+    if cur is not None: trades.append(cur)
+    return trades
+
+
 def J(o):
     if isinstance(o, np.generic): return o.item()
     raise TypeError(type(o))
@@ -102,15 +149,21 @@ def main():
     data, nif = download(syms)
     dstr = lambda ts: str(pd.Timestamp(ts).date())
     buy, opn, recent, allrows = [], [], [], []
-    stats = {k: {"trades": 0, "wins": 0, "sum": 0.0} for k in SETUPS}
+    stats = {k: {"trades": 0, "wins": 0, "sum": 0.0} for k in ["LEADER", *SETUPS]}
     last_day = max(d.index[-1] for d in data.values())
+    RK, M6 = leader_ranks(data)
+    lr = RK.iloc[-1].dropna().sort_values().head(L_TOP)
+    leaders = [dict(sym=s, rank=int(v), price=r2(data[s].Close.iloc[-1]), m6=round(float(M6[s].iloc[-1] * 100), 1),
+                    off_hi=round(float((data[s].Close.iloc[-1] / data[s].High.tail(252).max() - 1) * 100), 1)) for s, v in lr.items()]
     for s, d in data.items():
-        trs = engine(d, nif.Close); C = d.Close.values
+        trs = sorted(engine(d, nif.Close) + leader_engine(d, RK[s]), key=lambda t: t["sig_i"]); C = d.Close.values
         markers = []
         for t in trs:
             if t["status"] == "buy_next_open":
-                buy.append(dict(sym=s, setup=t["setup"], price=r2(C[-1]), tr=t["tr"], r20=t["r20"], off_hi=t["off_hi"],
-                                target=r2(C[-1] * (1 + TGT / 100)), stop=r2(C[-1] * (1 - STOP / 100)), max_entry=r2(C[-1] * (1 + GAPMAX / 100)),
+                ld = t["setup"] == "LEADER"; tg, sp = (L_TGT, L_STOP) if ld else (TGT, STOP)
+                buy.append(dict(sym=s, setup=t["setup"], price=r2(C[-1]), tr=t["tr"], r20=t["r20"], off_hi=t["off_hi"], rank=t.get("rank"),
+                                tgt_pct=tg, stop_pct=sp, target=r2(C[-1] * (1 + tg / 100)), stop=r2(C[-1] * (1 - sp / 100)),
+                                max_entry=None if ld else r2(C[-1] * (1 + GAPMAX / 100)),
                                 date=dstr(d.index[-1])))
                 markers.append([dstr(d.index[t["sig_i"]]), "sig", t["setup"]]); continue
             markers.append([dstr(d.index[t["entry_i"]]), "buy", round(t["entry"], 2), t["setup"]])
@@ -142,9 +195,9 @@ def main():
     ist = dt.datetime.now(dt.timezone.utc).replace(tzinfo=None) + dt.timedelta(hours=5, minutes=30)
     out = {"updated": ist.strftime("%d %b %Y, %I:%M %p IST"), "data_date": dstr(last_day), "universe": len(data),
            "nifty": {"last": round(nl, 1), "dma200": round(nd, 1), "r20": round(n20, 1), "ok": n20 > 0},
-           "buy": sorted(buy, key=lambda x: -x["tr"]), "open": sorted(opn, key=lambda x: (not x["sell"], -x["pnl"])),
+           "buy": sorted(buy, key=lambda x: (x["setup"] != "LEADER", -(x["tr"] or 0))), "leaders": leaders, "open": sorted(opn, key=lambda x: (not x["sell"], -x["pnl"])),
            "recent": sorted(recent, key=lambda x: x["date"], reverse=True), "stats_2y": stats, "watch_default": watch,
-           "rules": {"tr": TR, "r20": R20, "r20max": R20MAX, "target": TGT, "stop": STOP, "maxd": MAXD, "atr": ATRMAX, "ext": EXTMAX, "gap": GAPMAX}}
+           "rules": {"l_top": L_TOP, "l_tgt": L_TGT, "l_stop": L_STOP, "tr": TR, "r20": R20, "r20max": R20MAX, "target": TGT, "stop": STOP, "maxd": MAXD, "atr": ATRMAX, "ext": EXTMAX, "gap": GAPMAX}}
     json.dump(out, open(f"{OUT}/signals.json", "w"), separators=(",", ":"), default=J)
     json.dump(allrows, open(f"{OUT}/all.json", "w"), separators=(",", ":"), default=J)
     encrypt_site()
