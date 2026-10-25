@@ -1,0 +1,172 @@
+<!doctype html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width,initial-scale=1,viewport-fit=cover,user-scalable=no">
+<meta name="apple-mobile-web-app-capable" content="yes">
+<meta name="mobile-web-app-capable" content="yes">
+<meta name="apple-mobile-web-app-status-bar-style" content="black-translucent">
+<meta name="apple-mobile-web-app-title" content="Breakouts">
+<meta name="theme-color" content="#0b0f14">
+<link rel="apple-touch-icon" href="icon-180.png">
+<link rel="manifest" href="manifest.json">
+<title>Breakouts</title>
+<style>
+:root{--bg:#0b0f14;--card:#141a22;--line:#222b36;--tx:#e6edf3;--mut:#8b98a5;--g:#00c853;--r:#ff5252;--b:#2f81f7;--y:#ffb300;--o:#ff7043}
+*{box-sizing:border-box;-webkit-tap-highlight-color:transparent}
+html,body{margin:0;background:var(--bg);color:var(--tx);font:15px -apple-system,BlinkMacSystemFont,"SF Pro Text",Segoe UI,Roboto,sans-serif}
+header{position:sticky;top:0;z-index:5;background:var(--bg);padding:calc(env(safe-area-inset-top) + 10px) 16px 8px;border-bottom:1px solid var(--line)}
+header h1{margin:0;font-size:22px;font-weight:700}
+header .sub{color:var(--mut);font-size:12px;margin-top:2px}
+.mk{display:inline-block;padding:2px 8px;border-radius:10px;font-size:11px;font-weight:600;margin-left:6px;vertical-align:middle}
+main{padding:12px 16px calc(env(safe-area-inset-bottom) + 80px)}
+.sec{margin:14px 0 6px;font-size:13px;color:var(--mut);text-transform:uppercase;letter-spacing:.5px;display:flex;justify-content:space-between}
+.card{background:var(--card);border:1px solid var(--line);border-radius:14px;padding:12px 14px;margin-bottom:8px}
+.row{display:flex;align-items:center;justify-content:space-between;gap:10px}
+.sym{font-weight:700;font-size:16px}
+.tag{font-size:11px;padding:2px 7px;border-radius:8px;font-weight:600;white-space:nowrap}
+.IGNITION{background:#2f81f733;color:#79b8ff}.TURNAROUND{background:#ff704333;color:#ffab91}
+.mut{color:var(--mut);font-size:12px}
+.g{color:var(--g)}.r{color:var(--r)}
+.kv{display:grid;grid-template-columns:repeat(3,1fr);gap:6px;margin-top:8px}
+.kv div{background:#0f141b;border-radius:8px;padding:6px 8px}
+.kv b{display:block;font-size:14px}.kv span{font-size:10px;color:var(--mut)}
+.empty{color:var(--mut);text-align:center;padding:22px 8px;font-size:14px}
+.seg{display:flex;background:var(--card);border-radius:10px;padding:3px;margin:10px 0}
+.seg button{flex:1;border:0;background:none;color:var(--mut);padding:8px 4px;border-radius:8px;font-size:13px;font-weight:600}
+.seg button.on{background:#273140;color:var(--tx)}
+nav{position:fixed;bottom:0;left:0;right:0;display:flex;background:#0f141bf2;backdrop-filter:blur(10px);border-top:1px solid var(--line);padding-bottom:env(safe-area-inset-bottom);z-index:6}
+nav button{flex:1;border:0;background:none;color:var(--mut);padding:8px 0 6px;font-size:10px}
+nav button i{display:block;font-style:normal;font-size:20px;margin-bottom:1px}
+nav button.on{color:var(--b)}
+input{width:100%;background:var(--card);border:1px solid var(--line);color:var(--tx);border-radius:10px;padding:11px 12px;font-size:16px;outline:none}
+.li{display:flex;justify-content:space-between;align-items:center;padding:11px 2px;border-bottom:1px solid var(--line)}
+.li .st{font-size:10px;font-weight:700;padding:2px 6px;border-radius:6px;margin-left:6px}
+.BUY{background:#00c85333;color:var(--g)}.OPEN{background:#2f81f733;color:#79b8ff}
+.btn{border:0;background:#273140;color:var(--tx);border-radius:8px;padding:6px 10px;font-size:13px}
+#sheet{position:fixed;inset:0;background:var(--bg);z-index:20;display:none;flex-direction:column}
+#sheet.show{display:flex}
+#sheet .top{padding:calc(env(safe-area-inset-top) + 8px) 12px 8px;display:flex;align-items:center;gap:10px;border-bottom:1px solid var(--line)}
+#sheet .top .sym{flex:1}
+#chart{flex:1;min-height:0}
+#info{padding:10px 14px calc(env(safe-area-inset-bottom) + 10px);border-top:1px solid var(--line);font-size:13px}
+.note{font-size:12px;color:var(--mut);line-height:1.5}
+.pill{display:inline-block;background:#0f141b;border-radius:8px;padding:2px 8px;margin:2px 4px 2px 0;font-size:12px}
+</style>
+</head>
+<body>
+<header>
+  <h1>Breakouts <span id="mkt" class="mk"></span></h1>
+  <div class="sub" id="upd">Loading…</div>
+</header>
+<main id="view"></main>
+<nav>
+  <button data-v="sig" class="on"><i>⚡</i>Signals</button>
+  <button data-v="open"><i>📈</i>Open</button>
+  <button data-v="watch"><i>⭐</i>Watch</button>
+  <button data-v="search"><i>🔍</i>Search</button>
+  <button data-v="about"><i>ℹ️</i>Rules</button>
+</nav>
+<div id="sheet">
+  <div class="top"><button class="btn" id="back">‹ Back</button><div class="sym" id="csym"></div><button class="btn" id="cstar">☆</button></div>
+  <div id="chart"></div>
+  <div id="info"></div>
+</div>
+<script src="https://unpkg.com/lightweight-charts@4.1.3/dist/lightweight-charts.standalone.production.js"></script>
+<script>
+const $=s=>document.querySelector(s), V=$("#view");
+let S=null, ALL=[], view="sig", sigTab="all", chart=null;
+const LS={get(k,d){try{return JSON.parse(localStorage.getItem(k))??d}catch(e){return d}},set(k,v){try{localStorage.setItem(k,JSON.stringify(v))}catch(e){}}};
+let watch=LS.get("watch",null);
+const fmt=(x,d=2)=>x==null?"–":Number(x).toLocaleString("en-IN",{maximumFractionDigits:d,minimumFractionDigits:d});
+const pc=x=>x==null?"–":`<span class="${x>=0?'g':'r'}">${x>=0?'+':''}${fmt(x,1)}%</span>`;
+const nm={IGNITION:"🚀 Ignition",TURNAROUND:"🔄 Turnaround"};
+const tag=s=>`<span class="tag ${s}">${nm[s]||s}</span>`;
+
+async function load(){
+  try{
+    const b="?t="+Date.now();
+    S=await (await fetch("data/signals.json"+b)).json();
+    ALL=await (await fetch("data/all.json"+b)).json();
+    if(watch===null){watch=S.watch_default||[];LS.set("watch",watch)}
+    $("#upd").textContent=`Updated ${S.updated} · data ${S.data_date} · ${S.universe} stocks`;
+    const m=$("#mkt"); m.textContent=S.nifty.ok?"Market ✓":"Market weak"; m.style.background=S.nifty.ok?"#00c85333":"#ff525233"; m.style.color=S.nifty.ok?"#00c853":"#ff5252";
+  }catch(e){$("#upd").textContent="Couldn't load data – pull down / reopen. ("+e.message+")"}
+  render();
+}
+function buyCard(x){return `<div class="card" onclick="openChart('${x.sym}')">
+ <div class="row"><span class="sym">${x.sym}</span>${tag(x.setup)}</div>
+ <div class="mut" style="margin-top:3px">Signal ${x.date} · buy at tomorrow's open (~₹${fmt(x.price)})</div>
+ <div class="kv"><div><b>${x.tr}×</b><span>Turnover surge</span></div><div><b class="g">+${x.r20}%</b><span>Last 20 days</span></div><div><b>${x.off_hi}%</b><span>From 52w high</span></div>
+ <div><b class="g">₹${fmt(x.target)}</b><span>Target +${S.rules.target}%</span></div><div><b class="r">₹${fmt(x.stop)}</b><span>Stop −${S.rules.stop}%</span></div><div><b>${Math.floor(15000/x.price)||1}</b><span>Qty for ₹15k</span></div></div></div>`}
+function openCard(x){return `<div class="card" onclick="openChart('${x.sym}')">
+ <div class="row"><span class="sym">${x.sym}</span><span>${pc(x.pnl)}</span></div>
+ <div class="row mut" style="margin-top:3px"><span>${tag(x.setup)} · day ${x.days}/${S.rules.maxd}</span><span>₹${fmt(x.entry)} → ₹${fmt(x.last)}</span></div>
+ <div class="mut" style="margin-top:4px">Target ₹${fmt(x.target)} · Stop ₹${fmt(x.stop)} · bought ${x.entry_date}</div></div>`}
+
+function render(){
+  document.querySelectorAll("nav button").forEach(b=>b.classList.toggle("on",b.dataset.v===view));
+  if(!S){V.innerHTML='<div class="empty">Loading…</div>';return}
+  if(view==="sig"){
+    const f=x=>sigTab==="all"||x.setup===sigTab;
+    const buy=S.buy.filter(f), rec=S.recent.filter(f);
+    let h=`<div class="seg">${[["all","All"],["TURNAROUND","🔄 Fell & breaking out"],["IGNITION","🚀 Near high"]].map(([k,t])=>`<button class="${sigTab===k?'on':''}" onclick="sigTab='${k}';render()">${t}</button>`).join("")}</div>`;
+    if(!S.nifty.ok) h+=`<div class="card" style="border-color:#ff525266"><b class="r">Nifty is below its 200-day average.</b><div class="mut">Breakouts fail more often in weak markets – consider smaller size or skipping.</div></div>`;
+    h+=`<div class="sec"><span>Buy tomorrow</span><span>${buy.length}</span></div>`;
+    h+=buy.length?buy.map(buyCard).join(""):`<div class="card empty">No new signal today. Normal – setups come in bursts.</div>`;
+    h+=`<div class="sec"><span>Closed last 30 days</span><span>${rec.length}</span></div>`;
+    h+=rec.length?rec.map(x=>`<div class="li" onclick="openChart('${x.sym}')"><span><b>${x.sym}</b> <span class="mut">${x.date} · ${x.result}</span></span>${pc(x.pnl)}</div>`).join(""):`<div class="empty">None</div>`;
+    const st=S.stats_2y;
+    h+=`<div class="sec"><span>Last 2 years (this app's rules)</span></div><div class="card">${Object.keys(st).map(k=>`<div class="row" style="padding:4px 0">${tag(k)}<span class="mut">${st[k].trades} trades · ${st[k].win_pct??"–"}% won · avg ${st[k].avg_pct==null?"–":(st[k].avg_pct>=0?"+":"")+st[k].avg_pct+"%"}</span></div>`).join("")}</div>`;
+    V.innerHTML=h;
+  } else if(view==="open"){
+    V.innerHTML=`<div class="sec"><span>Trades still running</span><span>${S.open.length}</span></div>`+(S.open.length?S.open.map(openCard).join(""):`<div class="empty">No open trades</div>`);
+  } else if(view==="watch"){
+    const map=Object.fromEntries(ALL.map(r=>[r[0],r]));
+    V.innerHTML=`<div class="sec"><span>Watchlist</span><span>${watch.length}</span></div>`+(watch.length?watch.map(s=>{const r=map[s];return `<div class="li" onclick="openChart('${s}')"><span><b>${s}</b>${r&&r[3]?`<span class="st ${r[3]}">${r[3]}</span>`:""}</span><span>${r?`₹${fmt(r[1])} &nbsp;${pc(r[2])}`:'<span class="mut">not in scan list</span>'}</span></div>`}).join(""):`<div class="empty">Empty. Open any stock and tap ☆ to add.</div>`);
+  } else if(view==="search"){
+    V.innerHTML=`<input id="q" placeholder="Search NSE symbol e.g. JINDALPOLY" autocapitalize="characters" autocomplete="off"><div id="res"></div>`;
+    const q=$("#q"), res=$("#res");
+    const go=()=>{const t=q.value.trim().toUpperCase();const L=(t?ALL.filter(r=>r[0].includes(t)):ALL.filter(r=>r[3])).slice(0,60);
+      res.innerHTML=L.map(r=>`<div class="li" onclick="openChart('${r[0]}')"><span><b>${r[0]}</b>${r[3]?`<span class="st ${r[3]}">${r[3]}</span>`:""}</span><span>₹${fmt(r[1])} &nbsp;${pc(r[2])}</span></div>`).join("")||'<div class="empty">No match</div>'};
+    q.oninput=go; go();
+  } else {
+    const R=S.rules;
+    V.innerHTML=`<div class="card"><b>🔄 Turnaround – the JINDALPOLY type</b><p class="note">Stock had fallen and is still <b>10–20% below its 52-week high</b>. Then money floods in: average daily turnover of the last 10 days is <b>≥${R.tr}× the normal of the previous 100 days</b>, price closes at a <b>new 60-day closing high</b> and is <b>up ≥${R.r20}% in 20 days</b>.</p></div>
+    <div class="card"><b>🚀 Ignition</b><p class="note">Same turnover surge + 60-day high, but the stock is already within 10% of its 52-week high. In 14 years of backtests this was the stronger one (≈48% winners, ≈+5% per trade).</p></div>
+    <div class="card"><b>How to trade a signal</b><p class="note">Buy at next morning's open · Sell at <b class="g">+${R.target}%</b> or <b class="r">−${R.stop}%</b> · If neither in ${R.maxd} trading days, sell. Max ₹15,000 per stock, max 10 stocks.</p></div>
+    <div class="card"><b>Be honest with yourself</b><p class="note">Fewer than half the trades win; profit comes from winners being 2× the size of losers. Signals more than 20% below the high <b>lost money</b> in 2024-26 backtests, so the app ignores them. The Turnaround setup is the weaker of the two – check its live stats on the Signals tab. Past results don't guarantee the future. Data is end-of-day from Yahoo and refreshes every weekday evening. Not investment advice.</p></div>`;
+  }
+}
+document.querySelectorAll("nav button").forEach(b=>b.onclick=()=>{view=b.dataset.v;render();window.scrollTo(0,0)});
+
+async function openChart(sym){
+  $("#sheet").classList.add("show"); $("#csym").textContent=sym; $("#info").innerHTML='<span class="mut">Loading…</span>';
+  $("#cstar").textContent=watch.includes(sym)?"★":"☆"; $("#cstar").onclick=()=>{const i=watch.indexOf(sym);i<0?watch.unshift(sym):watch.splice(i,1);LS.set("watch",watch);$("#cstar").textContent=watch.includes(sym)?"★":"☆";if(view==="watch")render()};
+  const el=$("#chart"); el.innerHTML=""; if(chart){chart.remove();chart=null}
+  let d; try{d=await (await fetch(`data/c/${sym}.json?t=${S?S.data_date:""}`)).json()}catch(e){$("#info").innerHTML='<span class="r">No chart data for '+sym+'</span>';return}
+  if(!window.LightweightCharts){$("#info").innerHTML='<span class="r">Chart library failed to load (needs internet).</span>';return}
+  chart=LightweightCharts.createChart(el,{width:el.clientWidth,height:el.clientHeight,layout:{background:{color:"#0b0f14"},textColor:"#8b98a5"},grid:{vertLines:{color:"#161d26"},horzLines:{color:"#161d26"}},rightPriceScale:{borderColor:"#222b36"},timeScale:{borderColor:"#222b36"},crosshair:{mode:0}});
+  const cs=chart.addCandlestickSeries({upColor:"#00c853",downColor:"#ff5252",borderVisible:false,wickUpColor:"#00c853",wickDownColor:"#ff5252"});
+  cs.setData(d.c.map(r=>({time:r[0],open:r[1],high:r[2],low:r[3],close:r[4]})));
+  const vs=chart.addHistogramSeries({priceFormat:{type:"volume"},priceScaleId:"v"}); chart.priceScale("v").applyOptions({scaleMargins:{top:.8,bottom:0}});
+  vs.setData(d.c.map(r=>({time:r[0],value:r[5]*r[4],color:r[4]>=r[1]?"#00c85355":"#ff525255"})));
+  const sma=(n)=>{const o=[];let s=0;d.c.forEach((r,i)=>{s+=r[4];if(i>=n)s-=d.c[i-n][4];if(i>=n-1)o.push({time:r[0],value:s/n})});return o};
+  chart.addLineSeries({color:"#ffb300",lineWidth:1,priceLineVisible:false,lastValueVisible:false}).setData(sma(50));
+  chart.addLineSeries({color:"#2f81f7",lineWidth:1,priceLineVisible:false,lastValueVisible:false}).setData(sma(200));
+  const M={sig:["belowBar","#ffb300","arrowUp","SIGNAL"],buy:["belowBar","#2f81f7","arrowUp","BUY"],target:["aboveBar","#00c853","arrowDown","TARGET"],stop:["aboveBar","#ff5252","arrowDown","STOP"],time:["aboveBar","#8b98a5","arrowDown","TIME"]};
+  cs.setMarkers(d.m.map(m=>{const k=M[m[1]];let t=k[3];if(m[1]==="buy")t+=` ${m[3]==="TURNAROUND"?"🔄":"🚀"}`;if(["target","stop","time"].includes(m[1]))t+=` ${m[2]>0?"+":""}${m[2]}%`;return{time:m[0],position:k[0],color:k[1],shape:k[2],text:t}}).sort((a,b)=>a.time<b.time?-1:1));
+  d.l.forEach(l=>cs.createPriceLine({price:l.v,color:l.c,lineWidth:1,lineStyle:2,axisLabelVisible:true,title:l.t}));
+  chart.timeScale().setVisibleLogicalRange({from:Math.max(0,d.c.length-160),to:d.c.length+3});
+  const last=d.c[d.c.length-1], row=ALL.find(r=>r[0]===sym);
+  const hi=Math.max(...d.c.slice(-252).map(r=>r[2]));
+  $("#info").innerHTML=`<span class="pill">₹${fmt(last[4])} ${row?pc(row[2]):""}</span><span class="pill">${fmt((last[4]/hi-1)*100,1)}% from 1y high</span>${row&&row[3]?`<span class="pill st ${row[3]}">${row[3]}</span>`:""}<div class="mut" style="margin-top:6px">🟡 signal · 🔵 buy · 🟢 target · 🔴 stop · bars at bottom = turnover · yellow 50DMA · blue 200DMA</div>`;
+}
+$("#back").onclick=()=>{$("#sheet").classList.remove("show");if(chart){chart.remove();chart=null}};
+window.addEventListener("resize",()=>{if(chart){const el=$("#chart");chart.resize(el.clientWidth,el.clientHeight)}});
+document.addEventListener("visibilitychange",()=>{if(!document.hidden)load()});
+if("serviceWorker" in navigator) navigator.serviceWorker.register("sw.js").catch(()=>{});
+load();
+</script>
+</body>
+</html>
