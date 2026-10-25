@@ -133,7 +133,28 @@ def main():
            "rules": {"tr": TR, "r20": R20, "target": TGT, "stop": STOP, "maxd": MAXD}}
     json.dump(out, open(f"{OUT}/signals.json", "w"), separators=(",", ":"), default=J)
     json.dump(allrows, open(f"{OUT}/all.json", "w"), separators=(",", ":"), default=J)
+    encrypt_site()
     print(f"done: {len(data)} stocks, {len(buy)} buy signals, {len(opn)} open trades")
+
+
+def encrypt_site():
+    """Lock every data file with the APP_PASS secret (AES-256-GCM, key = PBKDF2-SHA256).
+    Refuses to publish anything if the secret is missing, so data is never public."""
+    import base64, glob
+    pw = os.environ.get("APP_PASS", "")
+    if len(pw) < 6:
+        raise SystemExit("APP_PASS secret missing/too short - add it in GitHub Settings > Secrets > Actions")
+    from cryptography.hazmat.primitives.ciphers.aead import AESGCM
+    from cryptography.hazmat.primitives.kdf.pbkdf2 import PBKDF2HMAC
+    from cryptography.hazmat.primitives import hashes
+    salt = os.urandom(16)
+    key = PBKDF2HMAC(hashes.SHA256(), 32, salt, 150000).derive(pw.encode())
+    g = AESGCM(key)
+    def enc(b):
+        iv = os.urandom(12); return base64.b64encode(iv + g.encrypt(iv, b, None)).decode()
+    for f in glob.glob(f"{OUT}/**/*.json", recursive=True):
+        b = open(f, "rb").read(); open(f, "w").write(enc(b))
+    json.dump({"salt": base64.b64encode(salt).decode(), "iter": 150000, "check": enc(b'"ok"')}, open(f"{OUT}/lock.json", "w"))
 
 
 if __name__ == "__main__":
