@@ -27,8 +27,10 @@ jobs:
       - uses: actions/setup-python@v5
         with:
           python-version: "3.11"
-      - run: pip install yfinance pandas numpy
+      - run: pip install yfinance pandas numpy cryptography
       - run: python scan.py
+        env:
+          APP_PASS: ${{ secrets.APP_PASS }}
       - name: Copy app files
         run: cp index.html manifest.json sw.js icon-180.png icon-512.png site/
       - uses: actions/configure-pages@v5
