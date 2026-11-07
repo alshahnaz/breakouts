@@ -43,7 +43,7 @@ nav button.on{color:var(--b)}
 input{width:100%;background:var(--card);border:1px solid var(--line);color:var(--tx);border-radius:10px;padding:11px 12px;font-size:16px;outline:none}
 .li{display:flex;justify-content:space-between;align-items:center;padding:11px 2px;border-bottom:1px solid var(--line)}
 .li .st{font-size:10px;font-weight:700;padding:2px 6px;border-radius:6px;margin-left:6px}
-.BUY{background:#00c85333;color:var(--g)}.OPEN{background:#2f81f733;color:#79b8ff}
+.BUY{background:#00c85333;color:var(--g)}.bar{height:6px;background:#273140;border-radius:3px;position:relative;margin-top:8px}.bar i{position:absolute;top:-3px;width:3px;height:12px;background:#fff;border-radius:2px}.OPEN{background:#2f81f733;color:#79b8ff}
 .btn{border:0;background:#273140;color:var(--tx);border-radius:8px;padding:6px 10px;font-size:13px}
 #sheet{position:fixed;inset:0;background:var(--bg);z-index:20;display:none;flex-direction:column}
 #sheet.show{display:flex}
@@ -63,7 +63,7 @@ input{width:100%;background:var(--card);border:1px solid var(--line);color:var(-
 <main id="view"></main>
 <nav>
   <button data-v="sig" class="on"><i>⚡</i>Signals</button>
-  <button data-v="open"><i>📈</i>Open</button>
+  <button data-v="open"><i>📒</i>Tracker</button>
   <button data-v="watch"><i>⭐</i>Watch</button>
   <button data-v="search"><i>🔍</i>Search</button>
   <button data-v="about"><i>ℹ️</i>Rules</button>
@@ -113,35 +113,54 @@ async function load(){
   }catch(e){$("#upd").textContent="Couldn't load data – pull down / reopen. ("+e.message+")"}
   render();
 }
-function buyCard(x){return `<div class="card" onclick="openChart('${x.sym}')">
- <div class="row"><span class="sym">${x.sym}</span>${tag(x.setup)}</div>
- <div class="mut" style="margin-top:3px">Signal ${x.date} · buy at tomorrow's open (~₹${fmt(x.price)})</div>
- <div class="kv">${x.setup==="LEADER"?`<div><b>#${x.rank}</b><span>Strength rank</span></div><div><b class="${x.r20>=0?'g':'r'}">${x.r20>=0?'+':''}${x.r20}%</b><span>Last 20 days</span></div><div><b>20-day high</b><span>Trigger</span></div>`:`<div><b>${x.tr}×</b><span>Turnover surge</span></div><div><b class="g">+${x.r20}%</b><span>Last 20 days</span></div><div><b>${x.off_hi}%</b><span>From 52w high</span></div>`}
- <div><b class="g">₹${fmt(x.target)}</b><span>Target +${x.tgt_pct??S.rules.target}%</span></div><div><b class="r">₹${fmt(x.stop)}</b><span>Stop: close below (−${x.stop_pct??S.rules.stop}%)</span></div><div><b>${Math.floor(15000/x.price)||1}</b><span>Qty for ₹15k</span></div></div>${x.max_entry?`<div class="mut" style="margin-top:6px">⚠️ Skip if it opens above ₹${fmt(x.max_entry)} (don't chase a gap)</div>`:""}</div>`}
-function openCard(x){return `<div class="card" onclick="openChart('${x.sym}')"${x.sell?' style="border-color:#ff5252"':''}>${x.sell?'<div class="r" style="font-weight:700;margin-bottom:4px">🔴 SELL at next open – closed below stop</div>':''}
- <div class="row"><span class="sym">${x.sym}</span><span>${pc(x.pnl)}</span></div>
- <div class="row mut" style="margin-top:3px"><span>${tag(x.setup)} · day ${x.days}/${S.rules.maxd}</span><span>₹${fmt(x.entry)} → ₹${fmt(x.last)}</span></div>
- <div class="mut" style="margin-top:4px">Target ₹${fmt(x.target)} · Stop ₹${fmt(x.stop)} · bought ${x.entry_date}</div></div>`}
-
+const RES={target:"🟢 Target hit",stop:"🔴 Stopped",time:"⏱ Time exit",skipped:"⚪ Skipped (gap up)"};
+function waitCard(e){const mx=e.sig_close*(1+e.gap_pct/100);return `<div class="card" onclick="openChart('${e.sym}')">
+ <div class="row"><span class="sym">${e.sym}</span>${tag(e.setup)}</div>
+ <div class="mut" style="margin-top:3px">Signal ${e.sig_date}${e.rank?` · strength #${e.rank}`:""} · close ₹${fmt(e.sig_close)}</div>
+ <div class="kv"><div><b>Next open</b><span>Buy at</span></div><div><b class="g">+${e.tgt_pct}%</b><span>Target from buy</span></div><div><b class="r">−${e.stop_pct}%</b><span>Stop (on close)</span></div></div>
+ <div class="mut" style="margin-top:6px">⚠️ Skip if it opens above ₹${fmt(mx)} · Qty for ₹15k ≈ ${Math.floor(15000/e.sig_close)||1}. This card moves to 📒 Tracker after tomorrow's open.</div></div>`}
+function holdCard(e){const p=Math.max(0,Math.min(100,(e.last-e.stop)/(e.target-e.stop)*100)),pe=(e.entry-e.stop)/(e.target-e.stop)*100;
+ return `<div class="card" onclick="openChart('${e.sym}')"${e.sell_next?' style="border-color:#ff5252"':''}>${e.sell_next?'<div class="r" style="font-weight:700;margin-bottom:4px">🔴 SELL at next open – closed below stop</div>':''}
+ <div class="row"><span class="sym">${e.sym}</span><span style="font-size:17px;font-weight:700">${pc(e.pnl)}</span></div>
+ <div class="row mut" style="margin-top:3px"><span>${tag(e.setup)} · day ${e.days}/${S.rules.maxd}</span><span>bought ${e.entry_date}</span></div>
+ <div class="row" style="margin-top:6px;font-size:13px"><span>₹${fmt(e.entry)} → <b>₹${fmt(e.last)}</b></span><span class="mut">best ${pc(e.best)} · worst ${pc(e.worst)}</span></div>
+ <div class="bar" style="background:linear-gradient(90deg,#ff525266 0%,#273140 ${pe}%,#00c85366 100%)"><i style="left:calc(${p}% - 1px)"></i></div>
+ <div class="row mut" style="font-size:11px;margin-top:4px"><span>Stop ₹${fmt(e.stop)}</span><span>Target ₹${fmt(e.target)}</span></div></div>`}
+function closedRow(e){return `<div class="li" onclick="openChart('${e.sym}')"><span><b>${e.sym}</b> ${tag(e.setup)}<div class="mut">${RES[e.status]} · ${e.status==="skipped"?`opened ₹${fmt(e.open_px)} on ${e.entry_date}`:`${e.entry_date} → ${e.exit_date} · ${e.days}d`}</div></span>${e.status==="skipped"?'<span class="mut">no trade</span>':pc(e.pnl)}</div>`}
+let trTab="hold";
 function render(){
   document.querySelectorAll("nav button").forEach(b=>b.classList.toggle("on",b.dataset.v===view));
   if(!S){V.innerHTML='<div class="empty">Loading…</div>';return}
   if(view==="sig"){
-    const f=x=>sigTab==="all"||x.setup===sigTab;
-    const buy=S.buy.filter(f), rec=S.recent.filter(f);
+    const f=x=>sigTab==="all"||x.setup===sigTab, Jn=S.journal||[];
+    const wait=Jn.filter(e=>e.status==="waiting"&&f(e));
     let h=`<div class="seg">${[["all","All"],["LEADER","⭐ Leaders"],["TURNAROUND","🔄 Fell"],["IGNITION","🚀 Near high"]].map(([k,t])=>`<button class="${sigTab===k?'on':''}" onclick="sigTab='${k}';render()">${t}</button>`).join("")}</div>`;
-    if(!S.nifty.ok) h+=`<div class="card" style="border-color:#ff525266"><b class="r">Nifty is down ${Math.abs(S.nifty.r20??0)}% in 20 days – 🔄/🚀 breakout buys paused.</b><div class="mut">⭐ Leader signals stay on – these are the stocks that held up and rose in past falls.</div></div>`;
-    h+=`<div class="sec"><span>Buy tomorrow</span><span>${buy.length}</span></div>`;
-    const lead=(sigTab==="all"||sigTab==="LEADER")&&S.leaders?`<div class="sec"><span>⭐ Strongest ${S.leaders.length} stocks now</span><span>wait for 20-day high</span></div><div class="card" style="padding:4px 14px">${S.leaders.map(x=>`<div class="li" onclick="openChart('${x.sym}')"><span><span class="mut">#${x.rank}</span> <b>${x.sym}</b></span><span>₹${fmt(x.price)} <span class="mut">6m ${pc(x.m6)} · ${x.off_hi}% hi</span></span></div>`).join("")}</div>`:"";
-    h+=buy.length?buy.map(buyCard).join(""):`<div class="card empty">No new signal today. Normal – setups come in bursts.</div>`;
-    h+=lead;
-    h+=`<div class="sec"><span>Closed last 30 days</span><span>${rec.length}</span></div>`;
-    h+=rec.length?rec.map(x=>`<div class="li" onclick="openChart('${x.sym}')"><span><b>${x.sym}</b> <span class="mut">${x.date} · ${x.result}</span></span>${pc(x.pnl)}</div>`).join(""):`<div class="empty">None</div>`;
+    if(!S.nifty.ok) h+=`<div class="card" style="border-color:#ff525266"><b class="r">Nifty is down ${Math.abs(S.nifty.r20??0)}% in 20 days – 🔄/🚀 breakout buys paused.</b><div class="mut">⭐ Leader signals stay on.</div></div>`;
+    h+=`<div class="sec"><span>Buy at next open</span><span>${wait.length}</span></div>`;
+    h+=wait.length?wait.map(waitCard).join(""):`<div class="card empty">No new signal today. Every past signal stays in 📒 Tracker until it closes.</div>`;
+    if(sigTab==="all"||sigTab==="LEADER"){
+      const LH=S.leader_hist||[], byS=Object.fromEntries(LH.map(x=>[x.sym,x]));
+      h+=`<div class="sec"><span>⭐ Strongest ${S.leaders.length} now</span><span>buy only on 20-day high</span></div><div class="card" style="padding:4px 14px">${S.leaders.map(x=>{const L=byS[x.sym];return `<div class="li" onclick="openChart('${x.sym}')"><span><span class="mut">#${x.rank}</span> <b>${x.sym}</b><div class="mut">${L?`leader since ${L.first} · ${L.days}d`:""}</div></span><span style="text-align:right">₹${fmt(x.price)}<div class="mut">${L&&L.chg!=null?`since then ${pc(L.chg)}`:""}</div></span></div>`}).join("")}</div>`;
+      const old=LH.filter(x=>!x.in_top);
+      h+=`<div class="sec"><span>Dropped out of the leader list</span><span>${old.length}</span></div>`;
+      h+=old.length?`<div class="card" style="padding:4px 14px">${old.map(x=>`<div class="li" onclick="openChart('${x.sym}')"><span><b>${x.sym}</b><div class="mut">leader ${x.first} → ${x.last} (${x.days}d, best #${x.best_rank})</div></span><span style="text-align:right">₹${fmt(x.first_px)} → ₹${fmt(x.now)}<div>${pc(x.chg)}</div></span></div>`).join("")}</div>`:`<div class="empty">None yet</div>`;
+    }
     const st=S.stats_2y;
-    h+=`<div class="sec"><span>Last 2 years (this app's rules)</span></div><div class="card">${Object.keys(st).map(k=>`<div class="row" style="padding:4px 0">${tag(k)}<span class="mut">${st[k].trades} trades · ${st[k].win_pct??"–"}% won · avg ${st[k].avg_pct==null?"–":(st[k].avg_pct>=0?"+":"")+st[k].avg_pct+"%"}</span></div>`).join("")}</div>`;
+    h+=`<div class="sec"><span>Backtest, last 2 years</span></div><div class="card">${Object.keys(st).map(k=>`<div class="row" style="padding:4px 0">${tag(k)}<span class="mut">${st[k].trades} trades · ${st[k].win_pct??"–"}% won · avg ${st[k].avg_pct==null?"–":(st[k].avg_pct>=0?"+":"")+st[k].avg_pct+"%"}</span></div>`).join("")}</div>`;
     V.innerHTML=h;
   } else if(view==="open"){
-    V.innerHTML=`<div class="sec"><span>Trades still running</span><span>${S.open.length}</span></div>`+(S.open.length?S.open.map(openCard).join(""):`<div class="empty">No open trades</div>`);
+    const Jn=S.journal||[], hold=Jn.filter(e=>e.status==="open").sort((a,b)=>(b.sell_next-a.sell_next)||(b.pnl-a.pnl)),
+      wait=Jn.filter(e=>e.status==="waiting"), cl=Jn.filter(e=>["target","stop","time"].includes(e.status)).sort((a,b)=>a.exit_date<b.exit_date?1:-1), sk=Jn.filter(e=>e.status==="skipped");
+    const win=cl.filter(e=>e.pnl>0).length, avg=cl.length?cl.reduce((a,e)=>a+e.pnl,0)/cl.length:0, rs=cl.reduce((a,e)=>a+150*e.pnl,0), ro=hold.reduce((a,e)=>a+150*e.pnl,0);
+    let h=`<div class="card"><b>Every signal since ${S.since}</b><div class="kv"><div><b>${Jn.length}</b><span>Signals</span></div><div><b>${hold.length}</b><span>Holding</span></div><div><b>${cl.length}</b><span>Closed</span></div>
+      <div><b>${cl.length?Math.round(100*win/cl.length)+"%":"–"}</b><span>Won (${win}/${cl.length})</span></div><div><b class="${rs>=0?'g':'r'}">₹${fmt(rs,0)}</b><span>Booked @₹15k each</span></div><div><b class="${ro>=0?'g':'r'}">₹${fmt(ro,0)}</b><span>Open P&L</span></div></div>
+      <div class="mut" style="margin-top:6px">Signals are saved the day they appear and followed with their own fixed buy, target and stop – nothing disappears when rankings change.</div></div>`;
+    h+=`<div class="seg">${[["hold",`Holding ${hold.length}`],["wait",`Waiting ${wait.length}`],["closed",`Closed ${cl.length}`],["skip",`Skipped ${sk.length}`]].map(([k,t])=>`<button class="${trTab===k?'on':''}" onclick="trTab='${k}';render()">${t}</button>`).join("")}</div>`;
+    if(trTab==="hold") h+=hold.length?hold.map(holdCard).join(""):`<div class="empty">Nothing held right now</div>`;
+    if(trTab==="wait") h+=wait.length?wait.map(waitCard).join(""):`<div class="empty">No signal waiting for tomorrow's open</div>`;
+    if(trTab==="closed") h+=cl.length?`<div class="card" style="padding:4px 14px">${cl.map(closedRow).join("")}</div>`:`<div class="empty">No closed trades yet</div>`;
+    if(trTab==="skip") h+=sk.length?`<div class="card" style="padding:4px 14px">${sk.map(closedRow).join("")}</div>`:`<div class="empty">None</div>`;
+    V.innerHTML=h;
   } else if(view==="watch"){
     const map=Object.fromEntries(ALL.map(r=>[r[0],r]));
     V.innerHTML=`<div class="sec"><span>Watchlist</span><span>${watch.length}</span></div>`+(watch.length?watch.map(s=>{const r=map[s];return `<div class="li" onclick="openChart('${s}')"><span><b>${s}</b>${r&&r[3]?`<span class="st ${r[3]}">${r[3]}</span>`:""}</span><span>${r?`₹${fmt(r[1])} &nbsp;${pc(r[2])}`:'<span class="mut">not in scan list</span>'}</span></div>`}).join(""):`<div class="empty">Empty. Open any stock and tap ☆ to add.</div>`);
