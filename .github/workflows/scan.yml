@@ -7,7 +7,7 @@ on:
   workflow_dispatch:          # "Run workflow" button for manual refresh
 
 permissions:
-  contents: read
+  contents: write
   pages: write
   id-token: write
 
@@ -31,6 +31,13 @@ jobs:
       - run: python scan.py
         env:
           APP_PASS: ${{ secrets.APP_PASS }}
+      - name: Save trade journal (encrypted) back to the repo
+        run: |
+          git config user.name "breakouts-bot"
+          git config user.email "41898282+github-actions[bot]@users.noreply.github.com"
+          git add journal.enc
+          git diff --cached --quiet || git commit -m "journal update $(date -u +%F)"
+          git push
       - name: Copy app files
         run: cp index.html manifest.json sw.js icon-180.png icon-512.png site/
       - uses: actions/configure-pages@v5
