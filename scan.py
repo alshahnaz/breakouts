@@ -146,49 +146,136 @@ def J(o):
 def r2(x): return None if x is None or (isinstance(x, float) and math.isnan(x)) else round(float(x), 2)
 
 
+# ---------------- permanent trade journal (v5) ----------------
+# Every signal is written ONCE into journal.enc (encrypted with APP_PASS, committed back to the repo) and then
+# followed with its own fixed entry / target / stop until it closes. Rankings changing later never remove it.
+JFILE, JSTART = "journal.enc", "2026-10-23"          # JSTART = first day the app was live
+
+
+def _aes(salt):
+    from cryptography.hazmat.primitives.ciphers.aead import AESGCM
+    from cryptography.hazmat.primitives.kdf.pbkdf2 import PBKDF2HMAC
+    from cryptography.hazmat.primitives import hashes
+    return AESGCM(PBKDF2HMAC(hashes.SHA256(), 32, salt, 150000).derive(os.environ.get("APP_PASS", "").encode()))
+
+
+def load_journal():
+    import base64
+    if os.path.exists(JFILE):
+        try:
+            b = json.load(open(JFILE)); a = base64.b64decode(b["data"])
+            return json.loads(_aes(base64.b64decode(b["salt"])).decrypt(a[:12], a[12:], None))
+        except Exception as e:
+            print("journal could not be opened (password changed?) - starting a new one:", e)
+    return {"since": JSTART, "done_to": None, "trades": [], "leaders": {}}
+
+
+def save_journal(j):
+    import base64
+    salt, iv = os.urandom(16), os.urandom(12)
+    data = base64.b64encode(iv + _aes(salt).encrypt(iv, json.dumps(j, default=J).encode(), None)).decode()
+    json.dump({"salt": base64.b64encode(salt).decode(), "data": data}, open(JFILE, "w"))
+
+
+def j_update(e, d):
+    """Follow one journal trade on its own fixed prices (same exit rules as the backtest)."""
+    dstr = lambda ts: str(pd.Timestamp(ts).date())
+    idx = d.index; O, H, C = d.Open.values, d.High.values, d.Close.values
+    e["last"], e["last_date"] = r2(C[-1]), dstr(idx[-1])
+    if e["status"] in ("target", "stop", "time", "skipped"):
+        return
+    k = int(idx.searchsorted(pd.Timestamp(e["sig_date"]), side="right"))
+    if k >= len(C):
+        e["status"] = "waiting"; return
+    if e.get("entry") is None:
+        if O[k] > e["sig_close"] * (1 + e["gap_pct"] / 100):
+            e.update(status="skipped", entry_date=dstr(idx[k]), open_px=r2(O[k])); return
+        e.update(entry=r2(O[k]), entry_date=dstr(idx[k]), target=r2(O[k] * (1 + e["tgt_pct"] / 100)), stop=r2(O[k] * (1 - e["stop_pct"] / 100)))
+    k = int(idx.searchsorted(pd.Timestamp(e["entry_date"])))
+    e.update(status="open", sell_next=False)
+    for i in range(k, len(C)):
+        if H[i] >= e["target"]:
+            e.update(status="target", exit=r2(max(e["target"], O[i]) if i > k else e["target"]), exit_date=dstr(idx[i])); break
+        if C[i] <= e["stop"]:
+            if i + 1 < len(C): e.update(status="stop", exit=r2(O[i + 1]), exit_date=dstr(idx[i + 1]))
+            else: e["sell_next"] = True
+            break
+        if i - k >= MAXD:
+            e.update(status="time", exit=r2(C[i]), exit_date=dstr(idx[i])); break
+    end = idx.searchsorted(pd.Timestamp(e["exit_date"])) + 1 if e.get("exit_date") else len(C)
+    e["days"] = int(end - k)
+    e["best"] = r2((H[k:end].max() / e["entry"] - 1) * 100)
+    e["worst"] = r2((d.Low.values[k:end].min() / e["entry"] - 1) * 100)
+    px = e.get("exit") if e["status"] in ("target", "stop", "time") else C[-1]
+    e["pnl"] = r2((px / e["entry"] - 1) * 100 - (0.25 if e["status"] in ("target", "stop", "time") else 0))
+
+
 def main():
     os.makedirs(OUT + "/c", exist_ok=True)
     syms, watch = load_universe()
     data, nif = download(syms)
     dstr = lambda ts: str(pd.Timestamp(ts).date())
-    buy, opn, recent, allrows = [], [], [], []
-    stats = {k: {"trades": 0, "wins": 0, "sum": 0.0} for k in ["LEADER", *SETUPS]}
+    allrows, stats = [], {k: {"trades": 0, "wins": 0, "sum": 0.0} for k in ["LEADER", *SETUPS]}
     last_day = max(d.index[-1] for d in data.values())
     RK, M6 = leader_ranks(data)
+    j = load_journal()
+    done_to = pd.Timestamp(j["done_to"] or (pd.Timestamp(JSTART) - pd.Timedelta(days=1)))
+    # 1) leader history: who was in the top list on every new day
+    for day in RK.index[RK.index > done_to]:
+        top = RK.loc[day].dropna(); top = top[top <= L_TOP]
+        for s, v in top.items():
+            px = r2(data[s].Close.get(day))
+            L = j["leaders"].setdefault(s, {"first": dstr(day), "first_px": px, "days": 0, "best_rank": int(v)})
+            L.update(last=dstr(day), days=L["days"] + 1, best_rank=min(L["best_rank"], int(v)), last_rank=int(v))
+    # 2) signals: compute every stock, add each NEW signal to the journal once
+    trades_by = {}
+    for s, d in data.items():
+        trs = sorted(engine(d, nif.Close) + leader_engine(d, RK[s]), key=lambda t: t["sig_i"]); trades_by[s] = trs
+        for t in trs:
+            sd = d.index[t["sig_i"]]
+            if t["status"] not in ("buy_next_open", "open") and t.get("exit_i") is not None:
+                r = t["exit"] / t["entry"] - 1 - 0.0025
+                st = stats[t["setup"]]; st["trades"] += 1; st["wins"] += int(r > 0); st["sum"] += r
+            if sd <= done_to: continue
+            jid = f"{s}|{t['setup']}|{dstr(sd)}"
+            if any(e["id"] == jid for e in j["trades"]): continue
+            ld = t["setup"] == "LEADER"
+            j["trades"].append(dict(id=jid, sym=s, setup=t["setup"], sig_date=dstr(sd), sig_close=r2(d.Close.iloc[t["sig_i"]]), rank=t.get("rank"),
+                                    tgt_pct=L_TGT if ld else TGT, stop_pct=L_STOP if ld else STOP, gap_pct=L_GAP if ld else GAPMAX,
+                                    entry=None, status="waiting"))
+    for e in j["trades"]:
+        if e["sym"] in data: j_update(e, data[e["sym"]])
+    j["done_to"] = dstr(last_day)
+    save_journal(j)
+    # 3) leaders list now + history of everyone who was a leader since the app started
     lr = RK.iloc[-1].dropna().sort_values().head(L_TOP)
     leaders = [dict(sym=s, rank=int(v), price=r2(data[s].Close.iloc[-1]), m6=round(float(M6[s].iloc[-1] * 100), 1),
                     off_hi=round(float((data[s].Close.iloc[-1] / data[s].High.tail(252).max() - 1) * 100), 1)) for s, v in lr.items()]
+    lhist = []
+    for s, L in j["leaders"].items():
+        now = r2(data[s].Close.iloc[-1]) if s in data else None
+        lhist.append(dict(sym=s, first=L["first"], first_px=L["first_px"], last=L["last"], days=L["days"], best_rank=L["best_rank"],
+                          now=now, chg=r2((now / L["first_px"] - 1) * 100) if now and L["first_px"] else None,
+                          in_top=L["last"] == dstr(last_day), rank=int(lr[s]) if s in lr else None))
+    lhist.sort(key=lambda x: (not x["in_top"], x["rank"] or 999, -pd.Timestamp(x["last"]).value))
+    # 4) chart files: journal trades drawn on the chart
+    jby = {}
+    for e in j["trades"]: jby.setdefault(e["sym"], []).append(e)
     for s, d in data.items():
-        trs = sorted(engine(d, nif.Close) + leader_engine(d, RK[s]), key=lambda t: t["sig_i"]); C = d.Close.values
-        markers = []
-        for t in trs:
-            if t["status"] == "buy_next_open":
-                ld = t["setup"] == "LEADER"; tg, sp = (L_TGT, L_STOP) if ld else (TGT, STOP)
-                buy.append(dict(sym=s, setup=t["setup"], price=r2(C[-1]), tr=t["tr"], r20=t["r20"], off_hi=t["off_hi"], rank=t.get("rank"),
-                                tgt_pct=tg, stop_pct=sp, target=r2(C[-1] * (1 + tg / 100)), stop=r2(C[-1] * (1 - sp / 100)),
-                                max_entry=r2(C[-1] * (1 + (L_GAP if ld else GAPMAX) / 100)),
-                                date=dstr(d.index[-1])))
-                markers.append([dstr(d.index[t["sig_i"]]), "sig", t["setup"]]); continue
-            markers.append([dstr(d.index[t["entry_i"]]), "buy", round(t["entry"], 2), t["setup"]])
-            if t["status"] == "open":
-                opn.append(dict(sym=s, setup=t["setup"], entry=r2(t["entry"]), entry_date=dstr(d.index[t["entry_i"]]), last=r2(C[-1]),
-                                pnl=r2((C[-1] / t["entry"] - 1) * 100), target=r2(t["target"]), stop=r2(t["stop"]),
-                                days=len(C) - 1 - t["entry_i"], sell=bool(t.get("sell_next"))))
-            else:
-                r = t["exit"] / t["entry"] - 1 - 0.0025
-                st = stats[t["setup"]]; st["trades"] += 1; st["wins"] += int(r > 0); st["sum"] += r
-                markers.append([dstr(d.index[t["exit_i"]]), t["status"], round(r * 100, 1)])
-                if (last_day - d.index[t["exit_i"]]).days <= 30:
-                    recent.append(dict(sym=s, setup=t["setup"], result=t["status"], pnl=round(r * 100, 1), date=dstr(d.index[t["exit_i"]])))
-        # chart file (last 300 days)
+        C = d.Close.values; markers, lines = [], []
+        for e in jby.get(s, []):
+            markers.append([e["sig_date"], "sig", e["setup"]])
+            if e.get("entry") is not None: markers.append([e["entry_date"], "buy", e["entry"], e["setup"]])
+            if e["status"] in ("target", "stop", "time"): markers.append([e["exit_date"], e["status"], e["pnl"]])
+            if e["status"] == "open":
+                lines = [{"v": e["target"], "c": "#00c853", "t": "Target"}, {"v": e["stop"], "c": "#ff5252", "t": "Stop"},
+                         {"v": e["entry"], "c": "#2f81f7", "t": "Bought"}]
         tail = d.tail(300)
         cand = [[dstr(i), r2(r.Open), r2(r.High), r2(r.Low), r2(r.Close), int(r.Volume)] for i, r in tail.iterrows()]
-        lines = []
-        cur = next((t for t in trs if t["status"] == "open"), None)
-        if cur: lines = [{"v": r2(cur["target"]), "c": "#00c853", "t": "Target"}, {"v": r2(cur["stop"]), "c": "#ff5252", "t": "Stop"}]
         json.dump({"sym": s, "c": cand, "m": [m for m in markers if m[0] >= cand[0][0]], "l": lines}, open(f"{OUT}/c/{s}.json", "w"), separators=(",", ":"), default=J)
         chg = (C[-1] / C[-2] - 1) * 100 if len(C) > 1 else 0
-        state = "BUY" if any(t["status"] == "buy_next_open" for t in trs) else ("OPEN" if cur else "")
+        es = [e["status"] for e in jby.get(s, [])]
+        state = "BUY" if "waiting" in es else ("OPEN" if "open" in es else "")
         allrows.append([s, r2(C[-1]), round(chg, 2), state])
     for k, v in stats.items():
         v["win_pct"] = round(100 * v["wins"] / v["trades"], 1) if v["trades"] else None
@@ -198,13 +285,14 @@ def main():
     ist = dt.datetime.now(dt.timezone.utc).replace(tzinfo=None) + dt.timedelta(hours=5, minutes=30)
     out = {"updated": ist.strftime("%d %b %Y, %I:%M %p IST"), "data_date": dstr(last_day), "universe": len(data),
            "nifty": {"last": round(nl, 1), "dma200": round(nd, 1), "r20": round(n20, 1), "ok": n20 > 0},
-           "buy": sorted(buy, key=lambda x: (x["setup"] != "LEADER", -(x["tr"] or 0))), "leaders": leaders, "open": sorted(opn, key=lambda x: (not x["sell"], -x["pnl"])),
-           "recent": sorted(recent, key=lambda x: x["date"], reverse=True), "stats_2y": stats, "watch_default": watch,
+           "journal": sorted(j["trades"], key=lambda e: e["sig_date"], reverse=True), "since": j["since"],
+           "leaders": leaders, "leader_hist": lhist, "stats_2y": stats, "watch_default": watch,
            "rules": {"l_top": L_TOP, "l_tgt": L_TGT, "l_stop": L_STOP, "tr": TR, "r20": R20, "r20max": R20MAX, "target": TGT, "stop": STOP, "maxd": MAXD, "atr": ATRMAX, "ext": EXTMAX, "gap": GAPMAX}}
     json.dump(out, open(f"{OUT}/signals.json", "w"), separators=(",", ":"), default=J)
     json.dump(allrows, open(f"{OUT}/all.json", "w"), separators=(",", ":"), default=J)
     encrypt_site()
-    print(f"done: {len(data)} stocks, {len(buy)} buy signals, {len(opn)} open trades")
+    n_w = sum(e["status"] == "waiting" for e in j["trades"]); n_o = sum(e["status"] == "open" for e in j["trades"])
+    print(f"done: {len(data)} stocks, journal {len(j['trades'])} trades ({n_w} waiting, {n_o} open), {len(j['leaders'])} leaders tracked")
 
 
 def encrypt_site():
