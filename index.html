@@ -111,7 +111,8 @@ async function load(){
     if(watch===null){watch=S.watch_default||[];LS.set("watch",watch)}
     $("#upd").textContent=`Updated ${S.updated} · data ${S.data_date} · ${S.universe} stocks`;
     const m=$("#mkt"); m.textContent=S.nifty.ok?"Market ✓":"Buys paused"; m.style.background=S.nifty.ok?"#00c85333":"#ff525233"; m.style.color=S.nifty.ok?"#00c853":"#ff5252";
-  }catch(e){$("#upd").textContent="Couldn't load data – pull down / reopen. ("+e.message+")"}
+  }catch(e){$("#upd").textContent="Couldn't load data";
+    if(!S){V.innerHTML=`<div class="card" style="margin-top:30px"><b class="r">Couldn't load the data</b><div class="mut" style="margin:6px 0 12px">${e.message||e}. Check your internet, then tap reload.</div><button class="btn" style="width:100%;padding:12px;background:#2f81f7" onclick="hardReload()">Reload app</button></div>`;return}}
   render();
 }
 const RES={target:"🟢 Target hit",stop:"🔴 Stopped",time:"⏱ Time exit",skipped:"⚪ Skipped (gap up)"};
@@ -129,7 +130,9 @@ function holdCard(e){const p=Math.max(0,Math.min(100,(e.last-e.stop)/(e.target-e
  <div class="row mut" style="font-size:11px;margin-top:4px"><span>Stop ₹${fmt(e.stop)}</span><span>Target ₹${fmt(e.target)}</span></div></div>`}
 function closedRow(e){return `<div class="li" onclick="openChart('${e.sym}')"><span><b>${e.sym}</b> ${tag(e.setup)}<div class="mut">${RES[e.status]} · ${e.status==="skipped"?`opened ₹${fmt(e.open_px)} on ${e.entry_date}`:`${e.entry_date} → ${e.exit_date} · ${e.days}d`}</div></span>${e.status==="skipped"?'<span class="mut">no trade</span>':pc(e.pnl)}</div>`}
 let trTab="hold";
-function render(){
+function render(){try{render0()}catch(e){V.innerHTML=`<div class="card" style="margin-top:30px"><b class="r">Couldn't show the data</b><div class="mut" style="margin:6px 0 12px">${e.message}</div><button class="btn" style="width:100%;padding:12px;background:#2f81f7" onclick="hardReload()">Reload app</button></div>`}}
+async function hardReload(){try{const ks=await caches.keys();await Promise.all(ks.map(k=>caches.delete(k)));const rs=await navigator.serviceWorker?.getRegistrations();if(rs)await Promise.all(rs.map(r=>r.unregister()))}catch(e){}location.replace(location.pathname+"?r="+Date.now())}
+function render0(){
   document.querySelectorAll("nav button").forEach(b=>b.classList.toggle("on",b.dataset.v===view));
   if(!S){V.innerHTML='<div class="empty">Loading…</div>';return}
   if(view==="pf"){
@@ -223,7 +226,7 @@ async function openChart(sym){
 $("#back").onclick=()=>{$("#sheet").classList.remove("show");if(chart){chart.remove();chart=null}};
 window.addEventListener("resize",()=>{if(chart){const el=$("#chart");chart.resize(el.clientWidth,el.clientHeight)}});
 document.addEventListener("visibilitychange",()=>{if(!document.hidden)load()});
-if("serviceWorker" in navigator) navigator.serviceWorker.register("sw.js").catch(()=>{});
+if("serviceWorker" in navigator) navigator.serviceWorker.register("sw.js?v=2").catch(()=>{});
 load();
 </script>
 </body>
