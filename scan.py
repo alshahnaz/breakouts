@@ -95,12 +95,13 @@ def engine(d, nifty=None):
 
 
 # ---------------- MOMENTUM PORTFOLIO (v6, main strategy) ----------------
-# Once a month (first trading day, after the close) hold the 20 strongest liquid stocks ranked by
-# 12-month return (skipping the last month) divided by volatility. If Nifty is below its 200-day average
-# on that day, hold CASH (liquid fund) instead. Existing holdings are kept while they stay in the top 40.
-# Backtest 2012-Oct 2026 (all NSE stocks, 0.3% costs): 23% a year, worst fall -23%, one losing year (2018 -12%),
-# 2026 flat while Nifty -14% (it was in cash from March). Real results will be lower (survivorship bias, slippage).
-P_N, P_BUF, P_MINTURN = 20, 2, 10.0     # stocks, keep-buffer multiple, min 20-day avg turnover in Rs crore
+# Every WEEK (first trading day of the week, after the close) rotate into the 20 strongest liquid stocks ranked by
+# 12-month return (skipping the last month) divided by volatility. Market switch with a 4% band: go to CASH when
+# Nifty closes a review day 4% below its 200-day average, come back when it is 4% above (stops weekly flip-flopping).
+# Holdings are kept while they stay in the top 40; about 2 stocks are swapped per week.
+# Backtest 2012-Oct 2026 (all NSE stocks, 0.3% costs): 18.4% a year, worst fall -32%, losing years 2018 -20%, 2022 -10%,
+# 2025 -10%. (Monthly rotation of the same list did better: 23%/yr, worst fall -23%.) Real results will be lower.
+P_N, P_BUF, P_MINTURN, P_BAND = 20, 2, 10.0, 4.0   # stocks, keep-buffer, min turnover Rs cr, market band %
 
 
 def pf_ranks(data):
@@ -117,11 +118,18 @@ def pf_update(j, data, nif, PR, M12):
     """Monthly decision, stored permanently in the journal."""
     dstr = lambda ts: str(pd.Timestamp(ts).date())
     pf = j.setdefault("pf", {"holdings": [], "log": [], "last": None})
+    if pf.get("freq") != "W":                     # switched from monthly to weekly: start a fresh record
+        pf.clear(); pf.update(holdings=[], log=[], last=None, freq="W", state=None)
     nd = nif.Close; n200 = nd.rolling(200).mean()
     last = nd.index[-1]
-    first = nd.index[(nd.index.year == last.year) & (nd.index.month == last.month)][0]
+    wk = nd.index.to_period("W")
+    first = nd.index[wk == wk[-1]][0]
     if pf["last"] != dstr(first) and first in PR.index:
-        ok = bool(nd[first] > n200[first])
+        x = (nd[first] / n200[first] - 1) * 100
+        if pf.get("state") is None: pf["state"] = bool(x > 0)
+        elif pf["state"] and x < -P_BAND: pf["state"] = False
+        elif not pf["state"] and x > P_BAND: pf["state"] = True
+        ok = pf["state"]
         r = PR.loc[first].dropna()
         old = {h["sym"]: h for h in pf["holdings"]}
         if ok:
@@ -145,9 +153,10 @@ def pf_update(j, data, nif, PR, M12):
                          rank=int(PR[h["sym"]].iloc[-1]) if h["sym"] in PR and PR[h["sym"]].iloc[-1] == PR[h["sym"]].iloc[-1] else None,
                          m12=r2(M12[h["sym"]].iloc[-1] * 100) if h["sym"] in M12 else None))
     nl, n2 = float(nd.iloc[-1]), float(n200.iloc[-1])
-    nxt = (pd.Timestamp(last) + pd.offsets.MonthBegin(1)).strftime("%d %b %Y")
+    nxt = (pd.Timestamp(first) + pd.Timedelta(days=7)).strftime("%d %b %Y")
     return dict(mode="INVESTED" if pf["holdings"] else "CASH", decided=pf["last"], holdings=sorted(hold, key=lambda h: -(h["pnl"] or 0)),
-                log=pf["log"][:24], nifty=round(nl, 1), n200=round(n2, 1), nifty_ok_now=nl > n2, next_review=f"first trading day on/after {nxt}",
+                log=pf["log"][:30], nifty=round(nl, 1), n200=round(n2, 1), nifty_ok_now=nl > n2, next_review=f"first trading day of next week ({nxt} or the next open day)", band=P_BAND,
+                state=pf.get("state"), gap200=round((nl / n2 - 1) * 100, 1),
                 act_tomorrow=pf["last"] == dstr(last), n=P_N, minturn=P_MINTURN)
 
 
