@@ -39,7 +39,7 @@ def download(syms):
     data = {}
     for i in range(0, len(syms), 100):
         b = syms[i:i + 100]
-        df = yf.download([s + ".NS" for s in b], period="2y", interval="1d", group_by="ticker", auto_adjust=True, progress=False, threads=True)
+        df = yf.download([s + ".NS" for s in b], period="3y", interval="1d", group_by="ticker", auto_adjust=True, progress=False, threads=True)
         for s in b:
             try:
                 x = df[s + ".NS"].dropna(subset=["Close"])
@@ -47,7 +47,7 @@ def download(syms):
             except Exception:
                 pass
         print(f"downloaded {min(i + 100, len(syms))}/{len(syms)}", flush=True)
-    n = yf.download("^NSEI", period="2y", interval="1d", auto_adjust=True, progress=False)
+    n = yf.download("^NSEI", period="3y", interval="1d", auto_adjust=True, progress=False)
     if isinstance(n.columns, pd.MultiIndex): n = n.droplevel(1, axis=1)
     return data, n.dropna(subset=["Close"])
 
@@ -92,6 +92,63 @@ def engine(d, nifty=None):
         i += 1
     if cur is not None: trades.append(cur)
     return trades
+
+
+# ---------------- MOMENTUM PORTFOLIO (v6, main strategy) ----------------
+# Once a month (first trading day, after the close) hold the 20 strongest liquid stocks ranked by
+# 12-month return (skipping the last month) divided by volatility. If Nifty is below its 200-day average
+# on that day, hold CASH (liquid fund) instead. Existing holdings are kept while they stay in the top 40.
+# Backtest 2012-Oct 2026 (all NSE stocks, 0.3% costs): 23% a year, worst fall -23%, one losing year (2018 -12%),
+# 2026 flat while Nifty -14% (it was in cash from March). Real results will be lower (survivorship bias, slippage).
+P_N, P_BUF, P_MINTURN = 20, 2, 10.0     # stocks, keep-buffer multiple, min 20-day avg turnover in Rs crore
+
+
+def pf_ranks(data):
+    C = pd.DataFrame({s: d.Close for s, d in data.items()}).sort_index()
+    H = pd.DataFrame({s: d.High for s, d in data.items()}).reindex(C.index)
+    T = pd.DataFrame({s: d.Close * d.Volume for s, d in data.items()}).reindex(C.index).rolling(20, min_periods=15).mean()
+    vol = C.pct_change(fill_method=None).rolling(126).std() * np.sqrt(250)
+    m12 = C.shift(21) / C.shift(252) - 1
+    ok = (T >= P_MINTURN * 1e7) & (C > 20) & (C > C.rolling(200).mean()) & (C / H.rolling(252, min_periods=200).max() >= 0.75) & vol.notna() & m12.notna()
+    return (m12 / vol).where(ok).rank(axis=1, ascending=False, method="first"), m12
+
+
+def pf_update(j, data, nif, PR, M12):
+    """Monthly decision, stored permanently in the journal."""
+    dstr = lambda ts: str(pd.Timestamp(ts).date())
+    pf = j.setdefault("pf", {"holdings": [], "log": [], "last": None})
+    nd = nif.Close; n200 = nd.rolling(200).mean()
+    last = nd.index[-1]
+    first = nd.index[(nd.index.year == last.year) & (nd.index.month == last.month)][0]
+    if pf["last"] != dstr(first) and first in PR.index:
+        ok = bool(nd[first] > n200[first])
+        r = PR.loc[first].dropna()
+        old = {h["sym"]: h for h in pf["holdings"]}
+        if ok:
+            keep = [x for x in old if x in r.index and r[x] <= P_N * P_BUF]
+            add = [x for x in r.sort_values().index if x not in keep][:P_N - len(keep)]
+            new = keep + add
+        else:
+            new = []
+        px = lambda x: r2(data[x].Close.get(first)) if x in data else None
+        sells = [dict(sym=x, entry=old[x]["entry"], since=old[x]["since"], exit=px(x),
+                      pnl=r2((px(x) / old[x]["entry"] - 1) * 100) if px(x) and old[x]["entry"] else None) for x in old if x not in new]
+        buys = [dict(sym=x, price=px(x), rank=int(r[x])) for x in new if x not in old]
+        pf["holdings"] = [old[x] for x in new if x in old] + [dict(sym=b["sym"], since=dstr(first), entry=b["price"]) for b in buys]
+        pf["log"].insert(0, dict(date=dstr(first), mode="INVESTED" if ok else "CASH", nifty=r2(nd[first]), n200=r2(n200[first]), buys=buys, sells=sells))
+        pf["last"] = dstr(first)
+    hold = []
+    for h in pf["holdings"]:
+        d = data.get(h["sym"])
+        now = r2(d.Close.iloc[-1]) if d is not None else None
+        hold.append(dict(h, now=now, pnl=r2((now / h["entry"] - 1) * 100) if now and h["entry"] else None,
+                         rank=int(PR[h["sym"]].iloc[-1]) if h["sym"] in PR and PR[h["sym"]].iloc[-1] == PR[h["sym"]].iloc[-1] else None,
+                         m12=r2(M12[h["sym"]].iloc[-1] * 100) if h["sym"] in M12 else None))
+    nl, n2 = float(nd.iloc[-1]), float(n200.iloc[-1])
+    nxt = (pd.Timestamp(last) + pd.offsets.MonthBegin(1)).strftime("%d %b %Y")
+    return dict(mode="INVESTED" if pf["holdings"] else "CASH", decided=pf["last"], holdings=sorted(hold, key=lambda h: -(h["pnl"] or 0)),
+                log=pf["log"][:24], nifty=round(nl, 1), n200=round(n2, 1), nifty_ok_now=nl > n2, next_review=f"first trading day on/after {nxt}",
+                act_tomorrow=pf["last"] == dstr(last), n=P_N, minturn=P_MINTURN)
 
 
 def leader_ranks(data):
@@ -246,6 +303,8 @@ def main():
     for e in j["trades"]:
         if e["sym"] in data: j_update(e, data[e["sym"]])
     j["done_to"] = dstr(last_day)
+    PR, M12 = pf_ranks(data)
+    portfolio = pf_update(j, data, nif, PR, M12)
     save_journal(j)
     # 3) leaders list now + history of everyone who was a leader since the app started
     lr = RK.iloc[-1].dropna().sort_values().head(L_TOP)
@@ -285,7 +344,7 @@ def main():
     ist = dt.datetime.now(dt.timezone.utc).replace(tzinfo=None) + dt.timedelta(hours=5, minutes=30)
     out = {"updated": ist.strftime("%d %b %Y, %I:%M %p IST"), "data_date": dstr(last_day), "universe": len(data),
            "nifty": {"last": round(nl, 1), "dma200": round(nd, 1), "r20": round(n20, 1), "ok": n20 > 0},
-           "journal": sorted(j["trades"], key=lambda e: e["sig_date"], reverse=True), "since": j["since"],
+           "portfolio": portfolio, "journal": sorted(j["trades"], key=lambda e: e["sig_date"], reverse=True), "since": j["since"],
            "leaders": leaders, "leader_hist": lhist, "stats_2y": stats, "watch_default": watch,
            "rules": {"l_top": L_TOP, "l_tgt": L_TGT, "l_stop": L_STOP, "tr": TR, "r20": R20, "r20max": R20MAX, "target": TGT, "stop": STOP, "maxd": MAXD, "atr": ATRMAX, "ext": EXTMAX, "gap": GAPMAX}}
     json.dump(out, open(f"{OUT}/signals.json", "w"), separators=(",", ":"), default=J)
