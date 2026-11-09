@@ -49,7 +49,15 @@ def download(syms):
         print(f"downloaded {min(i + 100, len(syms))}/{len(syms)}", flush=True)
     n = yf.download("^NSEI", period="3y", interval="1d", auto_adjust=True, progress=False)
     if isinstance(n.columns, pd.MultiIndex): n = n.droplevel(1, axis=1)
-    return data, n.dropna(subset=["Close"])
+    n = n.dropna(subset=["Close"])
+    # never decide on a half-finished day: if the market is still open (before 3:40 PM IST), drop today's bar
+    ist = dt.datetime.now(dt.timezone.utc).replace(tzinfo=None) + dt.timedelta(hours=5, minutes=30)
+    if ist.time() < dt.time(15, 40):
+        today = pd.Timestamp(ist.date())
+        data = {k: v[v.index.normalize() < today] for k, v in data.items()}
+        n = n[n.index.normalize() < today]
+        print("market still open - using data up to the previous close")
+    return data, n
 
 
 def engine(d, nifty=None):
@@ -230,7 +238,23 @@ def load_journal():
     if os.path.exists(JFILE):
         try:
             b = json.load(open(JFILE)); a = base64.b64decode(b["data"])
-            return json.loads(_aes(base64.b64decode(b["salt"])).decrypt(a[:12], a[12:], None))
+            j = json.loads(_aes(base64.b64decode(b["salt"])).decrypt(a[:12], a[12:], None))
+            if not j.get("fix_1109"):               # one-time repair: undo a run made mid-session on 9 Nov 2026
+                j["fix_1109"] = True
+                if j.get("done_to") == "2026-11-09":
+                    j["done_to"] = "2026-11-06"
+                    j["trades"] = [e for e in j["trades"] if e["sig_date"] != "2026-11-09"]
+                    for e in j["trades"]:
+                        if e.get("entry_date") == "2026-11-09" or e.get("exit_date") == "2026-11-09":
+                            for k in ("entry", "entry_date", "target", "stop", "exit", "exit_date", "open_px", "pnl", "best", "worst", "days"):
+                                e.pop(k, None)
+                            e["entry"] = None; e["status"] = "waiting"
+                    for sym in list(j["leaders"]):
+                        L = j["leaders"][sym]
+                        if L["first"] == "2026-11-09": del j["leaders"][sym]
+                        elif L["last"] == "2026-11-09": L["last"] = "2026-11-06"; L["days"] -= 1
+                j.pop("pf", None)
+            return j
         except Exception as e:
             print("journal could not be opened (password changed?) - starting a new one:", e)
     return {"since": JSTART, "done_to": None, "trades": [], "leaders": {}}
