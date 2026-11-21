@@ -275,23 +275,31 @@ def send_mail(subject, html):
 
 
 def week_emails(W):
+    """Email the newest closed week's result and the upcoming week's picks. A flag is only set once the email really went out."""
     rows = lambda ps: "".join(f"<tr><td><b>{p['sym']}</b></td><td>{p.get('entry', '')}</td><td>{p.get('last', '')}</td>"
                               f"<td style='color:{'#0a0' if (p.get('pnl') or 0) >= 0 else '#c00'}'>{p.get('pnl', '')}%</td></tr>" for p in ps)
-    tbl = lambda ps: f"<table border=1 cellpadding=6 style='border-collapse:collapse'><tr><th>Stock</th><th>Bought (Mon open)</th><th>Sold / now</th><th>P&amp;L</th></tr>{rows(ps)}</table>"
+    tbl = lambda ps: f"<table border=1 cellpadding=6 style='border-collapse:collapse'><tr><th>Stock</th><th>Bought (Mon open)</th><th>Sold (Fri close)</th><th>P&amp;L</th></tr>{rows(ps)}</table>"
     url = "https://alshahnaz.github.io/breakouts/"
+    if not W.get("mailfix"):                       # one-time: re-arm the upcoming week's email
+        W["mailfix"] = True
+        for rec in W["weeks"]:
+            if rec.get("status") == "pending": rec["emailed_picks"] = False
+    closed = [x for x in W["weeks"] if x.get("status") == "closed"]
+    for rec in closed[:-1]: rec["emailed_close"] = True          # only ever mail the newest result
+    for rec in closed[-1:]:
+        if not rec.get("emailed_close"):
+            if rec["mode"] == "TRADE":
+                rec["emailed_close"] = send_mail(f"Weekly 3 closed {rec['start']}: {rec['pnl']:+.2f}%", f"<p>Week {rec['start']} to {rec['end']} is closed (sold at Friday's close).</p>{tbl(rec['picks'])}<p>Week result (after ~0.4% costs): <b>{rec['pnl']:+.2f}%</b></p><p><a href='{url}'>Open the app</a></p>")
+            else:
+                rec["emailed_close"] = True
     for rec in W["weeks"]:
-        if rec.get("status") == "closed" and not rec.get("emailed_close"):
+        if not rec.get("emailed_picks") and rec.get("status") == "pending":
             if rec["mode"] == "TRADE":
-                send_mail(f"Weekly 3 closed {rec['week']}: {rec['pnl']:+.2f}%", f"<p>Week {rec['start']} to {rec['end']} is closed (sold at Friday's close).</p>{tbl(rec['picks'])}<p>Week result (after ~0.4% costs): <b>{rec['pnl']:+.2f}%</b></p><p><a href='{url}'>Open the app</a></p>")
-            rec["emailed_close"] = True
-        if not rec.get("emailed_picks") and rec.get("status") in (None, "pending"):
-            if rec["mode"] == "TRADE":
-                li = "".join(f"<li><b>{p['sym']}</b> – Friday close Rs {p['sig_close']}, strength rank #{p['rank']}, RSI(2) {p['rsi2']} – about Rs 5,000 = {max(1, int(5000 // p['sig_close']))} shares</li>" for p in rec["picks"])
-                send_mail(f"Weekly 3 for {rec['start']}: {', '.join(p['sym'] for p in rec['picks'])}",
+                li = "".join(f"<li><b>{p['sym']}</b> – Friday close Rs {p['sig_close']}, strength rank #{p['rank']}, RSI(2) {p['rsi2']} – Rs 5,000 = about {max(1, int(5000 // p['sig_close']))} shares</li>" for p in rec["picks"])
+                rec["emailed_picks"] = send_mail(f"Weekly 3 for {rec['start']}: {', '.join(p['sym'] for p in rec['picks'])}",
                           f"<p><b>BUY at Monday's open ({rec['start']})</b>, equal money in each, and <b>SELL all at Friday's close ({rec['end']})</b>.</p><ul>{li}</ul><p>No stop-loss, no target – the rule is simply Monday open to Friday close.</p><p><a href='{url}'>Open the app</a></p>")
             else:
-                send_mail(f"Weekly 3 for {rec['start']}: NO TRADE this week", "<p>Nifty is not above its 200-day average with a rising 20-day trend, so the model stays in cash this week.</p>")
-            rec["emailed_picks"] = True
+                rec["emailed_picks"] = send_mail(f"Weekly 3 for {rec['start']}: NO TRADE this week", "<p>Nifty is not above its 200-day average with a rising 20-day trend, so the model stays in cash this week.</p>")
 
 
 def reminder():
