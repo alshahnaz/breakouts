@@ -302,7 +302,120 @@ def week_emails(W):
                 rec["emailed_picks"] = send_mail(f"Weekly 3 for {rec['start']}: NO TRADE this week", "<p>Nifty is not above its 200-day average with a rising 20-day trend, so the model stays in cash this week.</p>")
 
 
+# ---------------- BUSINESS MODEL (v9, main strategy) ----------------
+# Paper account Rs 1.5 lakh, reviewed on the FIRST TRADING DAY OF EVERY MONTH after the close:
+#   * 60% in the 3 strongest liquid stocks (12-month return skipping last month / volatility; Rs 10 cr+ a day,
+#     above the 200-day average, within 25% of the 1-year high), 20% each. A holding is kept while it stays in the top 15.
+#     If Nifty is below its 200-day average on review day, this 60% waits in a liquid fund instead.
+#   * 40% in GOLDBEES (gold ETF) all the time. Re-balance back to 60/40 at each review.
+# Backtest Jan 2012 - Oct 2026 (0.3% costs): ~19.5% a year, worst fall -21%, one losing year (2015 -6%),
+# 89% of 12-month periods positive. Average holding ~3-4 months. Real results will be a few points lower.
+B_N, B_BUF, B_GOLD, B_MINTURN, B_CAP, B_START, B_COST, B_CASH = 3, 5, 0.40, 10.0, 150000.0, "2026-11-21", 0.003, 0.06
+BIZ_BT = {"cagr": 19.5, "max_dd": -20.9, "pos12": 89, "years": {"2012": 33, "2013": 3, "2014": 39, "2015": -6, "2016": 1, "2017": 59, "2018": 15,
+          "2019": 8, "2020": 52, "2021": 12, "2022": 5, "2023": 30, "2024": 24, "2025": 29, "2026": 6},
+          "nifty": {"2012": 5, "2013": 7, "2014": 31, "2015": -4, "2016": 3, "2017": 29, "2018": 3, "2019": 12, "2020": 15, "2021": 24,
+          "2022": 4, "2023": 20, "2024": 9, "2025": 11, "2026": -14}}
+
+
+def get_gold():
+    import yfinance as yf
+    g = yf.download("GOLDBEES.NS", period="1y", interval="1d", auto_adjust=True, progress=False)
+    if isinstance(g.columns, pd.MultiIndex): g = g.droplevel(1, axis=1)
+    g = g.dropna(subset=["Close"])
+    ist = dt.datetime.now(dt.timezone.utc).replace(tzinfo=None) + dt.timedelta(hours=5, minutes=30)
+    if ist.time() < dt.time(15, 40): g = g[g.index.normalize() < pd.Timestamp(ist.date())]
+    return g.Close
+
+
+def biz_update(j, data, nif, gold, PR):
+    dstr = lambda ts: str(pd.Timestamp(ts).date())
+    b = j.get("biz")
+    if not b or b.get("v") != 1:
+        b = j["biz"] = {"v": 1, "started": None, "last": None, "cash": B_CAP, "cash_date": None, "hold": {}, "gold_qty": 0.0,
+                        "log": [], "nav": [], "emailed": None}
+    nd = nif.Close; n200 = nd.rolling(200).mean()
+    last = nd.index[-1]
+    first = nd.index[(nd.index.year == last.year) & (nd.index.month == last.month)][0]
+    px = lambda s, day: float(data[s].Close.asof(day)) if s in data else None
+    gpx = lambda day: float(gold.asof(day))
+    def value(day):
+        v = b["cash"] * (1 + B_CASH) ** (max(0, (pd.Timestamp(day) - pd.Timestamp(b["cash_date"] or day)).days) / 365)
+        v += sum(h["qty"] * (px(s, day) or h["price"]) for s, h in b["hold"].items())
+        return v + b["gold_qty"] * gpx(day)
+    def choose(day, held):
+        r = PR.loc[day].dropna() if day in PR.index else pd.Series(dtype=float)
+        ok = bool(nd[day] > n200[day])
+        if not ok: return [], ok
+        keep = [s for s in held if s in r.index and r[s] <= B_N * B_BUF]
+        add = [s for s in r.sort_values().index if s not in keep][:B_N - len(keep)]
+        return keep + add, ok
+    new_review = first >= pd.Timestamp(B_START) and b["last"] != dstr(first) and first in PR.index
+    if new_review:
+        tot = value(first) if b["started"] else B_CAP
+        if not b["started"]: b["started"] = dstr(first)
+        held = list(b["hold"]); new, ok = choose(first, held)
+        acts, cost = [], 0.0
+        for s in held:
+            if s not in new:
+                h = b["hold"][s]; p = px(s, first)
+                acts.append(dict(do="SELL", sym=s, qty=round(h["qty"]), price=r2(p), pnl=r2((p / h["price"] - 1) * 100), since=h["since"]))
+                cost += h["qty"] * p * B_COST; del b["hold"][s]
+        per = tot * (1 - B_GOLD) / B_N
+        for s in new:
+            p = px(s, first); want = per / p
+            if s in b["hold"]:
+                diff = want - b["hold"][s]["qty"]
+                if abs(diff) * p > 0.15 * per:
+                    acts.append(dict(do="ADD" if diff > 0 else "TRIM", sym=s, qty=round(abs(diff)), price=r2(p), amount=round(abs(diff) * p)))
+                    cost += abs(diff) * p * B_COST; b["hold"][s]["qty"] = want
+            else:
+                acts.append(dict(do="BUY", sym=s, qty=round(want), price=r2(p), amount=round(per), rank=int(PR.loc[first, s])))
+                cost += per * B_COST; b["hold"][s] = dict(qty=want, price=p, since=dstr(first))
+        g = gpx(first); gwant = tot * B_GOLD / g; gd = gwant - b["gold_qty"]
+        if abs(gd) * g > 500:
+            acts.append(dict(do="BUY" if gd > 0 else "SELL", sym="GOLDBEES", qty=round(abs(gd)), price=r2(g), amount=round(abs(gd) * g)))
+            cost += abs(gd) * g * B_COST
+        b["gold_qty"] = gwant
+        b["cash"] = tot - sum(h["qty"] * px(s, first) for s, h in b["hold"].items()) - gwant * g - cost; b["cash_date"] = dstr(first)
+        b["log"].insert(0, dict(date=dstr(first), mode="INVESTED" if new else "STOCKS IN CASH", nifty=r2(nd[first]), n200=r2(n200[first]),
+                                value=round(tot), actions=acts, picks=new))
+        b["nav"].append([dstr(first), round(tot)])
+        b["last"] = dstr(first)
+    cur = round(value(last)) if b["started"] else B_CAP
+    prev, ok_now = choose(last, list(b["hold"]))
+    hold = [dict(sym=s, qty=round(h["qty"]), price=r2(h["price"]), since=h["since"], now=r2(px(s, last)),
+                 pnl=r2((px(s, last) / h["price"] - 1) * 100), amount=round(h["qty"] * px(s, last)), rank=int(PR.loc[last, s]) if s in PR.columns and PR.loc[last, s] == PR.loc[last, s] else None)
+            for s, h in b["hold"].items()]
+    gv = b["gold_qty"] * gpx(last)
+    nav = b["nav"] + [[dstr(last), cur]]
+    ytd0 = next((v for d, v in nav if d[:4] == dstr(last)[:4]), B_CAP)
+    nxt = (pd.Timestamp(last) + pd.offsets.MonthBegin(1)).strftime("%d %b %Y")
+    return dict(started=b["started"], value=cur, pnl=cur - B_CAP, pnl_pct=r2((cur / B_CAP - 1) * 100), ytd_pct=r2((cur / ytd0 - 1) * 100),
+                hold=hold, gold=dict(qty=round(b["gold_qty"]), price=r2(gpx(last)), amount=round(gv)), cash=round(cur - gv - sum(h["amount"] for h in hold)),
+                log=b["log"][:24], nav=nav, last=b["last"], new_review=new_review, next_review=f"first trading day of {nxt[3:]}",
+                preview=dict(picks=prev, market_ok=ok_now, date=dstr(last)), nifty=r2(nd[last]), n200=r2(n200[last]), start_rule=B_START,
+                bt=BIZ_BT, n=B_N, gold_w=B_GOLD, cap=B_CAP)
+
+
+def biz_email(j, B):
+    b = j["biz"]
+    if not B["log"] or b.get("emailed") == B["log"][0]["date"]: return
+    L = B["log"][0]
+    rows = "".join(f"<tr><td><b>{a['do']}</b></td><td>{a['sym']}</td><td>{a['qty']}</td><td>Rs {a['price']}</td><td>{('Rs ' + format(a['amount'], ',')) if a.get('amount') else ('P&L ' + str(a['pnl']) + '%' if a.get('pnl') is not None else '')}</td></tr>" for a in L["actions"])
+    hold = "".join(f"<li>{h['sym']}: {h['qty']} shares, bought Rs {h['price']} on {h['since']}</li>" for h in B["hold"])
+    html = (f"<h3>Monthly review {L['date']}</h3><p>Account value (paper): <b>Rs {B['value']:,}</b> ({B['pnl_pct']:+.2f}% since {B['started']}).</p>"
+            f"<p>Nifty {L['nifty']} vs 200-day average {L['n200']} → <b>{L['mode']}</b></p>"
+            + (f"<p><b>Do this at tomorrow's open:</b></p><table border=1 cellpadding=6 style='border-collapse:collapse'><tr><th>Action</th><th>Stock</th><th>Qty</th><th>Price ref</th><th>Amount</th></tr>{rows}</table>" if L["actions"] else "<p>No changes this month.</p>")
+            + f"<p>Holdings after the review:</p><ul>{hold}<li>GOLDBEES: {B['gold']['qty']} units</li></ul><p>Next review: {B['next_review']}.</p><p><a href='https://alshahnaz.github.io/breakouts/'>Open the app</a></p>")
+    if send_mail(f"Monthly review {L['date']}: " + (", ".join(f"{a['do']} {a['sym']}" for a in L["actions"]) or "no changes"), html):
+        b["emailed"] = L["date"]
+
+
 def reminder():
+    print("weekly reminder retired - the business model reviews monthly")
+
+
+def _old_reminder():
     """Friday ~2:15 PM IST: remind to sell the 3 positions before the close."""
     j = load_journal(); W = j.get("wk", {}).get("weeks", [])
     live = [x for x in W if x.get("status") == "live" and x["mode"] == "TRADE"]
@@ -484,7 +597,12 @@ def main():
     PR, M12 = pf_ranks(data)
     portfolio = pf_update(j, data, nif, PR, M12)
     weekly = week_update(j, data, nif)
-    week_emails(weekly)
+    for x in weekly["weeks"]: x["emailed_picks"] = x["emailed_close"] = True      # weekly emails retired (v9)
+    try:
+        business = biz_update(j, data, nif, get_gold(), PR)
+        biz_email(j, business)
+    except Exception as e:
+        print("business model error:", e); business = None
     save_journal(j)
     # 3) leaders list now + history of everyone who was a leader since the app started
     lr = RK.iloc[-1].dropna().sort_values().head(L_TOP)
@@ -524,7 +642,7 @@ def main():
     ist = dt.datetime.now(dt.timezone.utc).replace(tzinfo=None) + dt.timedelta(hours=5, minutes=30)
     out = {"updated": ist.strftime("%d %b %Y, %I:%M %p IST"), "data_date": dstr(last_day), "universe": len(data),
            "nifty": {"last": round(nl, 1), "dma200": round(nd, 1), "r20": round(n20, 1), "ok": n20 > 0},
-           "weekly": dict(weeks=weekly["weeks"][::-1], summary=weekly["summary"], bt=WEEK_BT, k=W_K, top=W_TOP), "portfolio": portfolio, "journal": sorted(j["trades"], key=lambda e: e["sig_date"], reverse=True), "since": j["since"],
+           "business": business, "weekly": dict(weeks=weekly["weeks"][::-1], summary=weekly["summary"], bt=WEEK_BT, k=W_K, top=W_TOP), "portfolio": portfolio, "journal": sorted(j["trades"], key=lambda e: e["sig_date"], reverse=True), "since": j["since"],
            "leaders": leaders, "leader_hist": lhist, "stats_2y": stats, "watch_default": watch,
            "rules": {"l_top": L_TOP, "l_tgt": L_TGT, "l_stop": L_STOP, "tr": TR, "r20": R20, "r20max": R20MAX, "target": TGT, "stop": STOP, "maxd": MAXD, "atr": ATRMAX, "ext": EXTMAX, "gap": GAPMAX}}
     json.dump(out, open(f"{OUT}/signals.json", "w"), separators=(",", ":"), default=J)
