@@ -231,6 +231,7 @@ def week_update(j, data, nif):
     W["weeks"].sort(key=lambda x: x["week"])
     # follow each week's picks: entry = Monday open, exit = Friday close
     for rec in W["weeks"]:
+        rec["end"] = str((pd.Timestamp(rec["start"]) + pd.Timedelta(days=4)).date())
         if rec.get("status") == "closed": continue
         w = pd.Period(rec["week"], "W")
         if w not in firstday:
