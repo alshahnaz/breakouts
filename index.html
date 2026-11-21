@@ -62,7 +62,7 @@ input{width:100%;background:var(--card);border:1px solid var(--line);color:var(-
 </header>
 <main id="view"></main>
 <nav>
-  <button data-v="pf" class="on"><i>📦</i>Portfolio</button>
+  <button data-v="wk" class="on"><i>🗓</i>Weekly 3</button>
   <button data-v="sig"><i>⚡</i>Signals</button>
   <button data-v="open"><i>📒</i>Tracker</button>
   <button data-v="watch"><i>⭐</i>Watch</button>
@@ -77,7 +77,7 @@ input{width:100%;background:var(--card);border:1px solid var(--line);color:var(-
 <script src="https://unpkg.com/lightweight-charts@4.1.3/dist/lightweight-charts.standalone.production.js"></script>
 <script>
 const $=s=>document.querySelector(s), V=$("#view");
-let S=null, ALL=[], view="pf", sigTab="all", chart=null;
+let S=null, ALL=[], view="wk", sigTab="all", chart=null;
 const LS={get(k,d){try{return JSON.parse(localStorage.getItem(k))??d}catch(e){return d}},set(k,v){try{localStorage.setItem(k,JSON.stringify(v))}catch(e){}}};
 let watch=LS.get("watch",null);
 const fmt=(x,d=2)=>x==null?"–":Number(x).toLocaleString("en-IN",{maximumFractionDigits:d,minimumFractionDigits:d});
@@ -135,7 +135,26 @@ async function hardReload(){try{const ks=await caches.keys();await Promise.all(k
 function render0(){
   document.querySelectorAll("nav button").forEach(b=>b.classList.toggle("on",b.dataset.v===view));
   if(!S){V.innerHTML='<div class="empty">Loading…</div>';return}
-  if(view==="pf"){
+  if(view==="wk"){
+    const Wk=S.weekly; if(!Wk){V.innerHTML='<div class="empty">Weekly data comes with the next scan.</div>';return}
+    const ws=Wk.weeks, nowW=ws.find(x=>x.status==="live")||ws.find(x=>x.status==="pending"), B=Wk.bt, sm=Wk.summary;
+    const pRow=p=>`<div class="li" onclick="openChart('${p.sym}')"><span><b>${p.sym}</b><div class="mut">rank #${p.rank} · RSI(2) ${p.rsi2}${p.entry?` · bought ₹${fmt(p.entry)}`:` · Fri close ₹${fmt(p.sig_close)}`}</div></span><span style="text-align:right">${p.last!=null?`₹${fmt(p.last)}<div>${pc(p.pnl)}</div>`:`<span class="mut">~${Math.max(1,Math.floor(5000/p.sig_close))} sh for ₹5k</span>`}</span></div>`;
+    let h="";
+    if(nowW){
+      const live=nowW.status==="live";
+      h+=`<div class="card" style="border-color:${nowW.mode==="TRADE"?'#2f81f7':'#ffb30066'}"><div class="row"><b style="font-size:17px">${nowW.mode==="TRADE"?(live?"🔵 THIS WEEK – HOLDING":"🟢 NEXT WEEK – BUY MONDAY"):"🟡 NO TRADE THIS WEEK"}</b>${live&&nowW.mode==="TRADE"?`<span style="font-size:18px;font-weight:700">${pc(nowW.pnl)}</span>`:""}</div>
+        <div class="mut" style="margin-top:4px">Week ${nowW.start} → ${nowW.end} · decided ${nowW.decided}</div>
+        ${nowW.mode==="TRADE"?`<p class="note"><b>Buy at Monday's open</b>, equal money in each (₹5,000 each of ₹15k). <b>Sell all 3 at Friday's close.</b> No target, no stop.</p></div><div class="card" style="padding:4px 14px">${nowW.picks.map(pRow).join("")}</div>`:`<p class="note">Nifty is not above its 200-day average with a rising 20-day trend, so the model stays in cash. Weeks like this were the main losers in testing.</p></div>`}`;
+    } else h+=`<div class="card empty">Next week's 3 stocks appear on Friday after the close (about 4:30 PM).</div>`;
+    const done=ws.filter(x=>x.status==="closed");
+    h+=`<div class="sec"><span>Since going live${sm.live_from?` (${sm.live_from})`:""}</span><span>${sm.weeks?`${sm.wins}/${sm.weeks} weeks up · total ${pc(sm.total)}`:"no closed week yet"}</span></div>`;
+    h+=`<div class="sec"><span>Week by week</span><span>${done.length}</span></div>`+(done.length?done.map(x=>`<div class="card"><div class="row"><b>${x.start} → ${x.end}</b><span>${x.mode==="TRADE"?`<b style="font-size:16px">${pc(x.pnl)}</b>`:'<span class="mut">no trade</span>'}</span></div>${x.seeded?'<div class="mut" style="font-size:11px">before going live – what the rules would have done</div>':''}${x.mode==="TRADE"?`<div class="mut" style="margin-top:4px;font-size:13px">${x.picks.map(p=>`${p.sym} ${p.pnl==null?"":(p.pnl>=0?"+":"")+p.pnl+"%"}`).join(" · ")}</div>`:""}</div>`).join(""):"");
+    const yr=Object.entries(B.years).map(([y,v])=>`<tr><td style="text-align:left">${y}</td><td class="${v>=0?'g':'r'}">${v>=0?'+':''}${v}%</td></tr>`).join("");
+    h+=`<div class="sec"><span>Honest backtest (2012 – Nov 2026)</span></div><div class="card"><div class="kv"><div><b>${B.win_pct}%</b><span>Weeks up</span></div><div><b>+${B.avg_pct}%</b><span>Avg per week</span></div><div><b>${B.cagr}%</b><span>Per year</span></div><div><b class="r">${B.worst_week}%</b><span>Worst week</span></div><div><b class="r">${B.max_dd}%</b><span>Worst fall</span></div><div><b>${B.weeks}</b><span>Weeks traded (49%)</span></div></div>
+      <table style="width:100%;font-size:13px;text-align:right;margin-top:8px">${yr}</table>
+      <p class="note">This was the best of every weekly 3-stock rule I tested (momentum, breakouts, dips, reversals, targets, stops). With only 3 stocks and one week, results are close to a coin-flip with a small edge: about half of weeks lose, and 2015–2020 were losing years. Treat it as paper trading first and watch the "since going live" line.</p></div>`;
+    V.innerHTML=h;
+  } else if(view==="pf"){
     const P=S.portfolio; if(!P){V.innerHTML='<div class="empty">Portfolio data comes with the next scan.</div>';return}
     const inv=P.mode==="INVESTED", per=Math.round(150000/P.n);
     let h=`<div class="card" style="border-color:${inv?'#00c85366':'#ffb30066'}"><div class="row"><b style="font-size:18px">${inv?'🟢 INVESTED':'🟡 IN CASH'}</b><span class="mut">decided ${P.decided}</span></div>
