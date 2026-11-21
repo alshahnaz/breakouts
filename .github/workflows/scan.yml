@@ -31,6 +31,9 @@ jobs:
       - run: python scan.py
         env:
           APP_PASS: ${{ secrets.APP_PASS }}
+          MAIL_USER: ${{ secrets.MAIL_USER }}
+          MAIL_APP_PASS: ${{ secrets.MAIL_APP_PASS }}
+          MAIL_TO: ${{ secrets.MAIL_TO }}
       - name: Save trade journal (encrypted) back to the repo
         run: |
           git config user.name "breakouts-bot"
