@@ -222,7 +222,7 @@ def week_update(j, data, nif):
         dday = lastday[w]
         old = seed and ((w + 1) < cur_week or ((w + 1) in lastday and complete(w + 1)))   # first run: finished weeks = history, no emails
         rec = dict(week=str(w + 1), decided=dstr(dday), seeded=old, emailed_picks=old, emailed_close=old)
-        rec["start"] = str((w + 1).start_time.date()); rec["end"] = str((w + 1).end_time.date())
+        rec["start"] = str((w + 1).start_time.date()); rec["end"] = str(((w + 1).start_time + pd.Timedelta(days=4)).date())
         if bool(mkt.get(dday, False)):
             rec.update(mode="TRADE", picks=pick(dday))
         else:
@@ -249,7 +249,7 @@ def week_update(j, data, nif):
         rec["status"] = "closed" if done else "live"
     W["weeks"] = W["weeks"][-60:]
     closed = [x for x in W["weeks"] if x.get("status") == "closed" and x["mode"] == "TRADE"]
-    live_from = min([x["week"] for x in W["weeks"] if not x.get("seeded")], default=None)
+    live_from = min([x["start"] for x in W["weeks"] if not x.get("seeded")], default=None)
     real = [x for x in closed if not x.get("seeded")]
     W["summary"] = dict(weeks=len(real), wins=sum(x["pnl"] > 0 for x in real), total=r2(sum(x["pnl"] for x in real)),
                         live_from=live_from)
