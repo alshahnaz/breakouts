@@ -168,6 +168,142 @@ def pf_update(j, data, nif, PR, M12):
                 act_tomorrow=pf["last"] == dstr(last), n=P_N, minturn=P_MINTURN)
 
 
+# ---------------- WEEKLY 3 (v8, main strategy) ----------------
+# Decide after Friday's close. Among liquid stocks (Rs 10 cr+/day) above their 200-day average, take the 30 with the
+# strongest 12-month momentum (skip last month, divided by volatility). Buy the 3 with the most oversold 2-day RSI
+# at Monday's open; sell all 3 at Friday's close. Skip the week (stay in cash) unless Nifty is above its 200-day
+# average AND up over the last 20 days.
+# Backtest Jan 2012 - Nov 2026, 0.4% round-trip costs: traded 49% of weeks; 53% of traded weeks positive;
+# average +0.42% per traded week; ~8.5%/yr; worst week -15.5%; worst fall -50%. Losing years: 2015, 2016, 2018, 2019, 2020.
+W_K, W_TOP, W_MINTURN = 3, 30, 10.0
+WEEK_BT = {"weeks": 358, "win_pct": 52.8, "avg_pct": 0.42, "cagr": 8.5, "worst_week": -15.5, "max_dd": -50.2,
+           "years": {"2013": 4, "2014": 60, "2015": -10, "2016": -7, "2017": 9, "2018": -8, "2019": -11, "2020": -15,
+                     "2021": 14, "2022": 8, "2023": 60, "2024": 26, "2025": 17, "2026": 3}}
+
+
+def week_picks_all(data, nif):
+    """For every date: rank table used by the weekly model. Returns (pick function, nifty ok series)."""
+    C = pd.DataFrame({s: d.Close for s, d in data.items()}).sort_index()
+    V = pd.DataFrame({s: d.Volume for s, d in data.items()}).reindex(C.index)
+    T = (C * V).rolling(20, min_periods=15).mean()
+    vol = C.pct_change(fill_method=None).rolling(126).std() * np.sqrt(250)
+    m12 = (C.shift(21) / C.shift(252) - 1) / vol
+    d1 = C.diff(); up = d1.clip(lower=0).ewm(alpha=0.5).mean(); dn = (-d1.clip(upper=0)).ewm(alpha=0.5).mean()
+    rsi2 = 100 - 100 / (1 + up / dn)
+    ok = (T >= W_MINTURN * 1e7) & (C > 30) & (C > C.rolling(200).mean()) & m12.notna()
+    rk = m12.where(ok).rank(axis=1, ascending=False, method="first")
+    n = nif.Close.reindex(C.index).ffill()
+    mkt = (n > n.rolling(200).mean()) & (n > n.shift(20))
+    def pick(day):
+        r = rk.loc[day]; top = r[r <= W_TOP].index
+        x = rsi2.loc[day, top].dropna().sort_values().head(W_K)
+        return [dict(sym=s, rank=int(r[s]), rsi2=round(float(v), 1), sig_close=r2(C.loc[day, s])) for s, v in x.items()]
+    return pick, mkt, C
+
+
+def week_update(j, data, nif):
+    """Keep j['wk'] up to date: one record per trading week, decided on the previous week's last close."""
+    dstr = lambda ts: str(pd.Timestamp(ts).date())
+    pick, mkt, C = week_picks_all(data, nif)
+    days = nif.index[nif.index.isin(C.index)]
+    wk = days.to_period("W")
+    ist = dt.datetime.now(dt.timezone.utc).replace(tzinfo=None) + dt.timedelta(hours=5, minutes=30)
+    cur_week = pd.Timestamp(ist.date()).to_period("W")
+    lastday = {w: days[wk == w][-1] for w in wk.unique()}
+    firstday = {w: days[wk == w][0] for w in wk.unique()}
+    def complete(w):            # a week is finished once its Friday has closed (or we are already in a later week)
+        return lastday[w].weekday() == 4 or w < cur_week
+    W = j.setdefault("wk", {"weeks": []})
+    have = {x["week"] for x in W["weeks"]}
+    weeks = [w for w in wk.unique() if complete(w)]
+    seed = not W["weeks"]
+    todo = weeks[-12:] if seed else [w for w in weeks if str(w + 1) not in have and w >= weeks[-2]]
+    for w in todo:                                  # decision taken at the close of week w, for week w+1
+        dday = lastday[w]
+        old = seed and ((w + 1) < cur_week or ((w + 1) in lastday and complete(w + 1)))   # first run: finished weeks = history, no emails
+        rec = dict(week=str(w + 1), decided=dstr(dday), seeded=old, emailed_picks=old, emailed_close=old)
+        rec["start"] = str((w + 1).start_time.date()); rec["end"] = str((w + 1).end_time.date())
+        if bool(mkt.get(dday, False)):
+            rec.update(mode="TRADE", picks=pick(dday))
+        else:
+            rec.update(mode="SKIP", picks=[])
+        W["weeks"].append(rec)
+    W["weeks"].sort(key=lambda x: x["week"])
+    # follow each week's picks: entry = Monday open, exit = Friday close
+    for rec in W["weeks"]:
+        if rec.get("status") == "closed": continue
+        w = pd.Period(rec["week"], "W")
+        if w not in firstday:
+            rec["status"] = "pending"; continue
+        f, l = firstday[w], lastday[w]; done = complete(w)
+        tot = []
+        for p in rec["picks"]:
+            d = data.get(p["sym"])
+            if d is None or f not in d.index: continue
+            p["entry"] = r2(d.Open[f]); p["entry_date"] = dstr(f)
+            end = l if done else d.index[-1]
+            p["last"] = r2(d.Close[end]); p["last_date"] = dstr(end)
+            p["pnl"] = r2((d.Close[end] / d.Open[f] - 1) * 100 - (0.4 if done else 0))
+            tot.append(p["pnl"])
+        rec["pnl"] = r2(sum(tot) / len(tot)) if tot else 0.0
+        rec["status"] = "closed" if done else "live"
+    W["weeks"] = W["weeks"][-60:]
+    closed = [x for x in W["weeks"] if x.get("status") == "closed" and x["mode"] == "TRADE"]
+    live_from = min([x["week"] for x in W["weeks"] if not x.get("seeded")], default=None)
+    real = [x for x in closed if not x.get("seeded")]
+    W["summary"] = dict(weeks=len(real), wins=sum(x["pnl"] > 0 for x in real), total=r2(sum(x["pnl"] for x in real)),
+                        live_from=live_from)
+    return W
+
+
+def send_mail(subject, html):
+    """Email via Gmail SMTP. Needs repo secrets MAIL_USER (gmail address), MAIL_APP_PASS (16-char app password); MAIL_TO optional."""
+    import smtplib
+    from email.mime.text import MIMEText
+    u, p = os.environ.get("MAIL_USER", ""), os.environ.get("MAIL_APP_PASS", "")
+    to = os.environ.get("MAIL_TO", "") or u
+    if not (u and p):
+        print("email not configured - skipped:", subject); return False
+    m = MIMEText(html, "html"); m["Subject"] = subject; m["From"] = u; m["To"] = to
+    try:
+        with smtplib.SMTP_SSL("smtp.gmail.com", 465, timeout=30) as sv:
+            sv.login(u, p.replace(" ", "")); sv.sendmail(u, [to], m.as_string())
+        print("email sent:", subject); return True
+    except Exception as e:
+        print("email failed:", e); return False
+
+
+def week_emails(W):
+    rows = lambda ps: "".join(f"<tr><td><b>{p['sym']}</b></td><td>{p.get('entry', '')}</td><td>{p.get('last', '')}</td>"
+                              f"<td style='color:{'#0a0' if (p.get('pnl') or 0) >= 0 else '#c00'}'>{p.get('pnl', '')}%</td></tr>" for p in ps)
+    tbl = lambda ps: f"<table border=1 cellpadding=6 style='border-collapse:collapse'><tr><th>Stock</th><th>Bought (Mon open)</th><th>Sold / now</th><th>P&amp;L</th></tr>{rows(ps)}</table>"
+    url = "https://alshahnaz.github.io/breakouts/"
+    for rec in W["weeks"]:
+        if rec.get("status") == "closed" and not rec.get("emailed_close"):
+            if rec["mode"] == "TRADE":
+                send_mail(f"Weekly 3 closed {rec['week']}: {rec['pnl']:+.2f}%", f"<p>Week {rec['start']} to {rec['end']} is closed (sold at Friday's close).</p>{tbl(rec['picks'])}<p>Week result (after ~0.4% costs): <b>{rec['pnl']:+.2f}%</b></p><p><a href='{url}'>Open the app</a></p>")
+            rec["emailed_close"] = True
+        if not rec.get("emailed_picks") and rec.get("status") in (None, "pending"):
+            if rec["mode"] == "TRADE":
+                li = "".join(f"<li><b>{p['sym']}</b> – Friday close Rs {p['sig_close']}, strength rank #{p['rank']}, RSI(2) {p['rsi2']} – about Rs 5,000 = {max(1, int(5000 // p['sig_close']))} shares</li>" for p in rec["picks"])
+                send_mail(f"Weekly 3 for {rec['start']}: {', '.join(p['sym'] for p in rec['picks'])}",
+                          f"<p><b>BUY at Monday's open ({rec['start']})</b>, equal money in each, and <b>SELL all at Friday's close ({rec['end']})</b>.</p><ul>{li}</ul><p>No stop-loss, no target – the rule is simply Monday open to Friday close.</p><p><a href='{url}'>Open the app</a></p>")
+            else:
+                send_mail(f"Weekly 3 for {rec['start']}: NO TRADE this week", "<p>Nifty is not above its 200-day average with a rising 20-day trend, so the model stays in cash this week.</p>")
+            rec["emailed_picks"] = True
+
+
+def reminder():
+    """Friday ~2:15 PM IST: remind to sell the 3 positions before the close."""
+    j = load_journal(); W = j.get("wk", {}).get("weeks", [])
+    live = [x for x in W if x.get("status") == "live" and x["mode"] == "TRADE"]
+    if not live: print("nothing to remind"); return
+    rec = live[-1]
+    items = "".join(f"<li><b>{p['sym']}</b> bought at Rs {p.get('entry')}</li>" for p in rec["picks"])
+    send_mail(f"SELL today before 3:30 PM: {', '.join(p['sym'] for p in rec['picks'])}",
+              f"<p>Friday reminder: the Weekly 3 rule sells all positions at today's close.</p><ul>{items}</ul>")
+
+
 def leader_ranks(data):
     """Daily rank (1 = strongest) by risk-adjusted 6m + 3m momentum, among liquid stocks above 200DMA and within 25% of 52w high."""
     C = pd.DataFrame({s: d.Close for s, d in data.items()}).sort_index()
@@ -338,6 +474,8 @@ def main():
     j["done_to"] = dstr(last_day)
     PR, M12 = pf_ranks(data)
     portfolio = pf_update(j, data, nif, PR, M12)
+    weekly = week_update(j, data, nif)
+    week_emails(weekly)
     save_journal(j)
     # 3) leaders list now + history of everyone who was a leader since the app started
     lr = RK.iloc[-1].dropna().sort_values().head(L_TOP)
@@ -377,7 +515,7 @@ def main():
     ist = dt.datetime.now(dt.timezone.utc).replace(tzinfo=None) + dt.timedelta(hours=5, minutes=30)
     out = {"updated": ist.strftime("%d %b %Y, %I:%M %p IST"), "data_date": dstr(last_day), "universe": len(data),
            "nifty": {"last": round(nl, 1), "dma200": round(nd, 1), "r20": round(n20, 1), "ok": n20 > 0},
-           "portfolio": portfolio, "journal": sorted(j["trades"], key=lambda e: e["sig_date"], reverse=True), "since": j["since"],
+           "weekly": dict(weeks=weekly["weeks"][::-1], summary=weekly["summary"], bt=WEEK_BT, k=W_K, top=W_TOP), "portfolio": portfolio, "journal": sorted(j["trades"], key=lambda e: e["sig_date"], reverse=True), "since": j["since"],
            "leaders": leaders, "leader_hist": lhist, "stats_2y": stats, "watch_default": watch,
            "rules": {"l_top": L_TOP, "l_tgt": L_TGT, "l_stop": L_STOP, "tr": TR, "r20": R20, "r20max": R20MAX, "target": TGT, "stop": STOP, "maxd": MAXD, "atr": ATRMAX, "ext": EXTMAX, "gap": GAPMAX}}
     json.dump(out, open(f"{OUT}/signals.json", "w"), separators=(",", ":"), default=J)
@@ -408,4 +546,5 @@ def encrypt_site():
 
 
 if __name__ == "__main__":
-    main()
+    import sys
+    reminder() if "--reminder" in sys.argv else main()
